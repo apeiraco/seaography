@@ -74,11 +74,6 @@ impl EntityDeleteMutationBuilder {
         let context = self.context;
 
         let guard = self.context.guards.entity_guards.get(&object_name);
-        let filter_conditions_transformer = self
-            .context
-            .transformers
-            .filter_conditions_transformers
-            .get(&object_name);
 
         Field::new(
             self.type_name::<T>(),
@@ -100,13 +95,7 @@ impl EntityDeleteMutationBuilder {
                     let db = ctx.data::<DatabaseConnection>()?;
 
                     let filters = ctx.args.get(&context.entity_delete_mutation.filter_field);
-                    let filter_condition = get_filter_conditions::<T>(context, filters);
-                    let filter_condition = if let Some(transformer) = filter_conditions_transformer
-                    {
-                        transformer(&ctx, filter_condition)
-                    } else {
-                        filter_condition
-                    };
+                    let filter_condition = get_filter_conditions::<T>(&ctx, context, filters);
 
                     let res: DeleteResult =
                         T::delete_many().filter(filter_condition).exec(db).await?;

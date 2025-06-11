@@ -84,12 +84,6 @@ impl EntityUpdateMutationBuilder {
         let guard = self.context.guards.entity_guards.get(&object_name);
         let field_guards = &self.context.guards.field_guards;
 
-        let filter_conditions_transformer = self
-            .context
-            .transformers
-            .filter_conditions_transformers
-            .get(&object_name);
-
         Field::new(
             self.type_name::<T>(),
             TypeRef::named_nn_list_nn(entity_object_builder.basic_type_name::<T>()),
@@ -119,13 +113,7 @@ impl EntityUpdateMutationBuilder {
                     let entity_object_builder = EntityObjectBuilder { context };
 
                     let filters = ctx.args.get(&context.entity_update_mutation.filter_field);
-                    let filter_condition = get_filter_conditions::<T>(context, filters);
-                    let filter_condition = if let Some(transformer) = filter_conditions_transformer
-                    {
-                        transformer(&ctx, filter_condition)
-                    } else {
-                        filter_condition
-                    };
+                    let filter_condition = get_filter_conditions::<T>(&ctx, context, filters);
 
                     let value_accessor = ctx
                         .args

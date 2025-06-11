@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use async_graphql::dynamic::{InputObject, InputValue, ObjectAccessor};
+use async_graphql::dynamic::{InputObject, InputValue, ObjectAccessor, ResolverContext};
 use sea_orm::{ColumnTrait, EntityTrait, Iterable, PrimaryKeyToColumn, PrimaryKeyTrait};
 
 use crate::{BuilderContext, EntityObjectBuilder, SeaResult, TypesMapHelper};
@@ -138,6 +138,7 @@ impl EntityInputBuilder {
 
     pub fn parse_object<T>(
         &self,
+        resolver_context: &ResolverContext<'_>,
         object: &ObjectAccessor,
     ) -> SeaResult<BTreeMap<String, sea_orm::Value>>
     where
@@ -153,16 +154,34 @@ impl EntityInputBuilder {
 
         let mut map = BTreeMap::<String, sea_orm::Value>::new();
 
+        let entity_name = entity_object_builder.type_name::<T>();
         for column in T::Column::iter() {
             let column_name = entity_object_builder.column_name::<T>(&column);
 
             let value = match object.get(&column_name) {
                 Some(value) => value,
-                None => continue,
+                None => {
+                    if let Some(parser) = self
+                        .context
+                        .types
+                        .input_none_conversions
+                        .get(&format!("{entity_name}.{column_name}"))
+                    {
+                        let result = parser.as_ref()(resolver_context)?;
+                        if let Some(result) = result {
+                            map.insert(column_name, result);
+                        }
+                        continue;
+                    }
+                    continue;
+                }
             };
 
-            let result =
-                types_map_helper.async_graphql_value_to_sea_orm_value::<T>(&column, &value)?;
+            let result = types_map_helper.async_graphql_value_to_sea_orm_value::<T>(
+                resolver_context,
+                &column,
+                &value,
+            )?;
 
             map.insert(column_name, result);
         }

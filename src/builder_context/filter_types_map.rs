@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use async_graphql::dynamic::{InputObject, InputValue, ObjectAccessor, TypeRef};
+use async_graphql::dynamic::{InputObject, InputValue, ObjectAccessor, ResolverContext, TypeRef};
 use sea_orm::{ColumnTrait, ColumnType, Condition, EntityTrait};
 
 use crate::{
@@ -8,8 +8,11 @@ use crate::{
     EntityObjectBuilder, SeaResult, TypesMapHelper,
 };
 
-type FnFilterCondition =
-    Box<dyn Fn(Condition, &ObjectAccessor) -> SeaResult<Condition> + Send + Sync>;
+pub type FnFilterCondition = Box<
+    dyn Fn(&ResolverContext<'_>, Condition, Option<&ObjectAccessor>) -> SeaResult<Condition>
+        + Send
+        + Sync,
+>;
 
 /// The configuration for FilterTypesMapHelper
 pub struct FilterTypesMapConfig {
@@ -391,8 +394,9 @@ impl FilterTypesMapHelper {
     /// used to parse a filter input object and update the query condition
     pub fn prepare_column_condition<T>(
         &self,
+        resolver_context: &ResolverContext<'_>,
         mut condition: Condition,
-        filter: &ObjectAccessor,
+        filter: Option<ObjectAccessor<'_>>,
         column: &T::Column,
     ) -> SeaResult<Condition>
     where
@@ -412,7 +416,11 @@ impl FilterTypesMapHelper {
                 FilterType::Boolean => &self.context.filter_types.boolean_filter_info,
                 FilterType::Id => &self.context.filter_types.id_filter_info,
                 FilterType::Enumeration(_) => {
-                    return prepare_enumeration_condition::<T>(filter, column, condition)
+                    if let Some(filter) = filter {
+                        return prepare_enumeration_condition::<T>(filter, column, condition);
+                    } else {
+                        return Ok(condition);
+                    }
                 }
                 FilterType::Custom(_) => {
                     let entity_object_builder = EntityObjectBuilder {
@@ -428,7 +436,7 @@ impl FilterTypesMapHelper {
                         .condition_functions
                         .get(&format!("{entity_name}.{column_name}"))
                     {
-                        return filter_condition_fn(condition, filter);
+                        return filter_condition_fn(resolver_context, condition, filter.as_ref());
                     } else {
                         // FIXME: add log warning to console
                         return Ok(condition);
@@ -438,175 +446,235 @@ impl FilterTypesMapHelper {
             None => return Ok(condition),
         };
 
-        for operation in filter_info.supported_operations.iter() {
-            match operation {
-                FilterOperation::Equals => {
-                    if let Some(value) = filter.get("eq") {
-                        let value = types_map_helper
-                            .async_graphql_value_to_sea_orm_value::<T>(column, &value)?;
-                        condition = condition.add(column.eq(value));
+        if let Some(filter) = filter {
+            for operation in filter_info.supported_operations.iter() {
+                match operation {
+                    FilterOperation::Equals => {
+                        if let Some(value) = filter.get("eq") {
+                            let value = types_map_helper
+                                .async_graphql_value_to_sea_orm_value::<T>(
+                                    resolver_context,
+                                    column,
+                                    &value,
+                                )?;
+                            condition = condition.add(column.eq(value));
+                        }
                     }
-                }
-                FilterOperation::NotEquals => {
-                    if let Some(value) = filter.get("ne") {
-                        let value = types_map_helper
-                            .async_graphql_value_to_sea_orm_value::<T>(column, &value)?;
-                        condition = condition.add(column.ne(value));
+                    FilterOperation::NotEquals => {
+                        if let Some(value) = filter.get("ne") {
+                            let value = types_map_helper
+                                .async_graphql_value_to_sea_orm_value::<T>(
+                                    resolver_context,
+                                    column,
+                                    &value,
+                                )?;
+                            condition = condition.add(column.ne(value));
+                        }
                     }
-                }
-                FilterOperation::GreaterThan => {
-                    if let Some(value) = filter.get("gt") {
-                        let value = types_map_helper
-                            .async_graphql_value_to_sea_orm_value::<T>(column, &value)?;
-                        condition = condition.add(column.gt(value));
+                    FilterOperation::GreaterThan => {
+                        if let Some(value) = filter.get("gt") {
+                            let value = types_map_helper
+                                .async_graphql_value_to_sea_orm_value::<T>(
+                                    resolver_context,
+                                    column,
+                                    &value,
+                                )?;
+                            condition = condition.add(column.gt(value));
+                        }
                     }
-                }
-                FilterOperation::GreaterThanEquals => {
-                    if let Some(value) = filter.get("gte") {
-                        let value = types_map_helper
-                            .async_graphql_value_to_sea_orm_value::<T>(column, &value)?;
-                        condition = condition.add(column.gte(value));
+                    FilterOperation::GreaterThanEquals => {
+                        if let Some(value) = filter.get("gte") {
+                            let value = types_map_helper
+                                .async_graphql_value_to_sea_orm_value::<T>(
+                                    resolver_context,
+                                    column,
+                                    &value,
+                                )?;
+                            condition = condition.add(column.gte(value));
+                        }
                     }
-                }
-                FilterOperation::LessThan => {
-                    if let Some(value) = filter.get("lt") {
-                        let value = types_map_helper
-                            .async_graphql_value_to_sea_orm_value::<T>(column, &value)?;
-                        condition = condition.add(column.lt(value));
+                    FilterOperation::LessThan => {
+                        if let Some(value) = filter.get("lt") {
+                            let value = types_map_helper
+                                .async_graphql_value_to_sea_orm_value::<T>(
+                                    resolver_context,
+                                    column,
+                                    &value,
+                                )?;
+                            condition = condition.add(column.lt(value));
+                        }
                     }
-                }
-                FilterOperation::LessThanEquals => {
-                    if let Some(value) = filter.get("lte") {
-                        let value = types_map_helper
-                            .async_graphql_value_to_sea_orm_value::<T>(column, &value)?;
-                        condition = condition.add(column.lte(value));
+                    FilterOperation::LessThanEquals => {
+                        if let Some(value) = filter.get("lte") {
+                            let value = types_map_helper
+                                .async_graphql_value_to_sea_orm_value::<T>(
+                                    resolver_context,
+                                    column,
+                                    &value,
+                                )?;
+                            condition = condition.add(column.lte(value));
+                        }
                     }
-                }
-                FilterOperation::IsIn => {
-                    if let Some(value) = filter.get("is_in") {
-                        let value = value
-                            .list()?
-                            .iter()
-                            .map(|v| {
-                                types_map_helper
-                                    .async_graphql_value_to_sea_orm_value::<T>(column, &v)
-                            })
-                            .collect::<SeaResult<Vec<_>>>()?;
-                        condition = condition.add(column.is_in(value));
+                    FilterOperation::IsIn => {
+                        if let Some(value) = filter.get("is_in") {
+                            let value = value
+                                .list()?
+                                .iter()
+                                .map(|v| {
+                                    types_map_helper.async_graphql_value_to_sea_orm_value::<T>(
+                                        resolver_context,
+                                        column,
+                                        &v,
+                                    )
+                                })
+                                .collect::<SeaResult<Vec<_>>>()?;
+                            condition = condition.add(column.is_in(value));
+                        }
                     }
-                }
-                FilterOperation::IsNotIn => {
-                    if let Some(value) = filter.get("is_not_in") {
-                        let value = value
-                            .list()?
-                            .iter()
-                            .map(|v| {
-                                types_map_helper
-                                    .async_graphql_value_to_sea_orm_value::<T>(column, &v)
-                            })
-                            .collect::<SeaResult<Vec<_>>>()?;
-                        condition = condition.add(column.is_not_in(value));
+                    FilterOperation::IsNotIn => {
+                        if let Some(value) = filter.get("is_not_in") {
+                            let value = value
+                                .list()?
+                                .iter()
+                                .map(|v| {
+                                    types_map_helper.async_graphql_value_to_sea_orm_value::<T>(
+                                        resolver_context,
+                                        column,
+                                        &v,
+                                    )
+                                })
+                                .collect::<SeaResult<Vec<_>>>()?;
+                            condition = condition.add(column.is_not_in(value));
+                        }
                     }
-                }
-                FilterOperation::IsNull => {
-                    if filter.get("is_null").is_some() {
-                        condition = condition.add(column.is_null());
+                    FilterOperation::IsNull => {
+                        if filter.get("is_null").is_some() {
+                            condition = condition.add(column.is_null());
+                        }
                     }
-                }
-                FilterOperation::IsNotNull => {
-                    if filter.get("is_not_null").is_some() {
-                        condition = condition.add(column.is_not_null());
+                    FilterOperation::IsNotNull => {
+                        if filter.get("is_not_null").is_some() {
+                            condition = condition.add(column.is_not_null());
+                        }
                     }
-                }
-                FilterOperation::Contains => {
-                    if let Some(value) = filter.get("contains") {
-                        let value = types_map_helper
-                            .async_graphql_value_to_sea_orm_value::<T>(column, &value)?;
-                        let s = match value {
-                            sea_orm::sea_query::Value::String(Some(s)) => s.to_string(),
-                            _ => value.to_string(),
-                        };
-                        condition = condition.add(column.contains(s));
+                    FilterOperation::Contains => {
+                        if let Some(value) = filter.get("contains") {
+                            let value = types_map_helper
+                                .async_graphql_value_to_sea_orm_value::<T>(
+                                    resolver_context,
+                                    column,
+                                    &value,
+                                )?;
+                            let s = match value {
+                                sea_orm::sea_query::Value::String(Some(s)) => s.to_string(),
+                                _ => value.to_string(),
+                            };
+                            condition = condition.add(column.contains(s));
+                        }
                     }
-                }
-                FilterOperation::StartsWith => {
-                    if let Some(value) = filter.get("starts_with") {
-                        let value = types_map_helper
-                            .async_graphql_value_to_sea_orm_value::<T>(column, &value)?;
-                        let s = match value {
-                            sea_orm::sea_query::Value::String(Some(s)) => s.to_string(),
-                            _ => value.to_string(),
-                        };
-                        condition = condition.add(column.starts_with(s));
+                    FilterOperation::StartsWith => {
+                        if let Some(value) = filter.get("starts_with") {
+                            let value = types_map_helper
+                                .async_graphql_value_to_sea_orm_value::<T>(
+                                    resolver_context,
+                                    column,
+                                    &value,
+                                )?;
+                            let s = match value {
+                                sea_orm::sea_query::Value::String(Some(s)) => s.to_string(),
+                                _ => value.to_string(),
+                            };
+                            condition = condition.add(column.starts_with(s));
+                        }
                     }
-                }
-                FilterOperation::EndsWith => {
-                    if let Some(value) = filter.get("ends_with") {
-                        let value = types_map_helper
-                            .async_graphql_value_to_sea_orm_value::<T>(column, &value)?;
-                        let s = match value {
-                            sea_orm::sea_query::Value::String(Some(s)) => s.to_string(),
-                            _ => value.to_string(),
-                        };
-                        condition = condition.add(column.ends_with(s));
+                    FilterOperation::EndsWith => {
+                        if let Some(value) = filter.get("ends_with") {
+                            let value = types_map_helper
+                                .async_graphql_value_to_sea_orm_value::<T>(
+                                    resolver_context,
+                                    column,
+                                    &value,
+                                )?;
+                            let s = match value {
+                                sea_orm::sea_query::Value::String(Some(s)) => s.to_string(),
+                                _ => value.to_string(),
+                            };
+                            condition = condition.add(column.ends_with(s));
+                        }
                     }
-                }
-                FilterOperation::Like => {
-                    if let Some(value) = filter.get("like") {
-                        let value = types_map_helper
-                            .async_graphql_value_to_sea_orm_value::<T>(column, &value)?;
-                        let s = match value {
-                            sea_orm::sea_query::Value::String(Some(s)) => s.to_string(),
-                            _ => value.to_string(),
-                        };
-                        condition = condition.add(column.like(s));
+                    FilterOperation::Like => {
+                        if let Some(value) = filter.get("like") {
+                            let value = types_map_helper
+                                .async_graphql_value_to_sea_orm_value::<T>(
+                                    resolver_context,
+                                    column,
+                                    &value,
+                                )?;
+                            let s = match value {
+                                sea_orm::sea_query::Value::String(Some(s)) => s.to_string(),
+                                _ => value.to_string(),
+                            };
+                            condition = condition.add(column.like(s));
+                        }
                     }
-                }
-                FilterOperation::NotLike => {
-                    if let Some(value) = filter.get("not_like") {
-                        let value = types_map_helper
-                            .async_graphql_value_to_sea_orm_value::<T>(column, &value)?;
-                        condition = condition.add(column.not_like(value.to_string()));
+                    FilterOperation::NotLike => {
+                        if let Some(value) = filter.get("not_like") {
+                            let value = types_map_helper
+                                .async_graphql_value_to_sea_orm_value::<T>(
+                                    resolver_context,
+                                    column,
+                                    &value,
+                                )?;
+                            condition = condition.add(column.not_like(value.to_string()));
+                        }
                     }
-                }
-                FilterOperation::Between => {
-                    if let Some(value) = filter.get("between") {
-                        let value = value
-                            .list()?
-                            .iter()
-                            .map(|v| {
-                                types_map_helper
-                                    .async_graphql_value_to_sea_orm_value::<T>(column, &v)
-                            })
-                            .collect::<SeaResult<Vec<_>>>()?;
+                    FilterOperation::Between => {
+                        if let Some(value) = filter.get("between") {
+                            let value = value
+                                .list()?
+                                .iter()
+                                .map(|v| {
+                                    types_map_helper.async_graphql_value_to_sea_orm_value::<T>(
+                                        resolver_context,
+                                        column,
+                                        &v,
+                                    )
+                                })
+                                .collect::<SeaResult<Vec<_>>>()?;
 
-                        let a = value[0].clone();
-                        let b = value[1].clone();
+                            let a = value[0].clone();
+                            let b = value[1].clone();
 
-                        condition = condition.add(column.between(a, b));
+                            condition = condition.add(column.between(a, b));
+                        }
                     }
-                }
-                FilterOperation::NotBetween => {
-                    if let Some(value) = filter.get("not_between") {
-                        let value = value
-                            .list()?
-                            .iter()
-                            .map(|v| {
-                                types_map_helper
-                                    .async_graphql_value_to_sea_orm_value::<T>(column, &v)
-                            })
-                            .collect::<SeaResult<Vec<_>>>()?;
+                    FilterOperation::NotBetween => {
+                        if let Some(value) = filter.get("not_between") {
+                            let value = value
+                                .list()?
+                                .iter()
+                                .map(|v| {
+                                    types_map_helper.async_graphql_value_to_sea_orm_value::<T>(
+                                        resolver_context,
+                                        column,
+                                        &v,
+                                    )
+                                })
+                                .collect::<SeaResult<Vec<_>>>()?;
 
-                        let a = value[0].clone();
-                        let b = value[1].clone();
+                            let a = value[0].clone();
+                            let b = value[1].clone();
 
-                        condition = condition.add(column.not_between(a, b));
+                            condition = condition.add(column.not_between(a, b));
+                        }
                     }
                 }
             }
-        }
 
-        Ok(condition)
+            Ok(condition)
+        } else {
+            Ok(condition)
+        }
     }
 }
 

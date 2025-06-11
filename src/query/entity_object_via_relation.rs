@@ -52,11 +52,6 @@ impl EntityObjectViaRelationBuilder {
 
         let object_name: String = entity_object_builder.type_name::<R>();
         let guard = self.context.guards.entity_guards.get(&object_name);
-        let filter_conditions_transformer = self
-            .context
-            .transformers
-            .filter_conditions_transformers
-            .get(&object_name);
 
         let from_col = <T::Column as std::str::FromStr>::from_str(
             via_relation_definition
@@ -110,12 +105,8 @@ impl EntityObjectViaRelationBuilder {
                     };
 
                     let filters = ctx.args.get(&context.entity_query_field.filters);
-                    let filters = get_filter_conditions::<R>(context, filters);
-                    let filters = if let Some(transformer) = filter_conditions_transformer {
-                        transformer(&ctx, filters)
-                    } else {
-                        filters
-                    };
+                    let filters = get_filter_conditions::<R>(&ctx, context, filters);
+
                     let order_by = ctx.args.get(&context.entity_query_field.order_by);
                     let order_by = OrderInputBuilder { context }.parse_object::<R>(order_by);
                     let key = KeyComplex::<R> {
@@ -174,12 +165,7 @@ impl EntityObjectViaRelationBuilder {
                         };
 
                         let filters = ctx.args.get(&context.entity_query_field.filters);
-                        let filters = get_filter_conditions::<R>(context, filters);
-                        let filters = if let Some(transformer) = filter_conditions_transformer {
-                            transformer(&ctx, filters)
-                        } else {
-                            filters
-                        };
+                        let filters = get_filter_conditions::<R>(&ctx, context, filters);
 
                         let order_by = ctx.args.get(&context.entity_query_field.order_by);
                         let order_by = OrderInputBuilder { context }.parse_object::<R>(order_by);

@@ -92,11 +92,6 @@ impl EntityQueryFieldBuilder {
         let type_name = connection_object_builder.type_name(&object_name);
 
         let guard = self.context.guards.entity_guards.get(&object_name);
-        let filter_conditions_transformer = self
-            .context
-            .transformers
-            .filter_conditions_transformers
-            .get(&object_name);
 
         let context: &'static BuilderContext = self.context;
         Field::new(
@@ -123,13 +118,8 @@ impl EntityQueryFieldBuilder {
                     }
 
                     let filters = ctx.args.get(&context.entity_query_field.filters);
-                    let filters = get_filter_conditions::<T>(context, filters);
+                    let filters = get_filter_conditions::<T>(&ctx, context, filters);
 
-                    let filters = if let Some(transformer) = filter_conditions_transformer {
-                        transformer(&ctx, filters)
-                    } else {
-                        filters
-                    };
                     let order_by = ctx.args.get(&context.entity_query_field.order_by);
                     let order_by = OrderInputBuilder { context }.parse_object::<T>(order_by);
                     let pagination = ctx.args.get(&context.entity_query_field.pagination);

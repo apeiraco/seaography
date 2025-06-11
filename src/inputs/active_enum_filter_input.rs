@@ -74,7 +74,7 @@ impl ActiveEnumFilterInputBuilder {
 
 /// used to update the query condition with enumeration filters
 pub fn prepare_enumeration_condition<T>(
-    filter: &ObjectAccessor,
+    filter: ObjectAccessor<'_>,
     column: &T::Column,
     condition: Condition,
 ) -> SeaResult<Condition>

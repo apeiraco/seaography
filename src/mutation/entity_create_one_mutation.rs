@@ -163,20 +163,7 @@ where
     <T as EntityTrait>::Model: IntoActiveModel<A>,
     A: ActiveModelTrait<Entity = T> + sea_orm::ActiveModelBehavior + std::marker::Send,
 {
-    let object_name: String = entity_object_builder.type_name::<T>();
-
-    let data = entity_input_builder.parse_object::<T>(input_object)?;
-
-    let mut data = if let Some(transformer) = entity_input_builder
-        .context
-        .transformers
-        .mutation_input_object_transformers
-        .get(&object_name)
-    {
-        transformer(resolver_context, data)
-    } else {
-        data
-    };
+    let mut data = entity_input_builder.parse_object::<T>(resolver_context, input_object)?;
 
     let mut active_model = A::default();
 

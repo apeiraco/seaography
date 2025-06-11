@@ -1,13 +1,16 @@
 use std::{collections::BTreeMap, num::ParseIntError};
 
-use async_graphql::dynamic::{TypeRef, ValueAccessor};
+use async_graphql::dynamic::{ResolverContext, TypeRef, ValueAccessor};
 use heck::ToUpperCamelCase;
 use sea_orm::{ColumnTrait, ColumnType, EntityTrait};
 
 use crate::{ActiveEnumBuilder, BuilderContext, EntityObjectBuilder, SeaResult};
 
 pub type FnInputTypeConversion =
-    Box<dyn Fn(&ValueAccessor) -> SeaResult<sea_orm::Value> + Send + Sync>;
+    Box<dyn Fn(&ResolverContext<'_>, &ValueAccessor) -> SeaResult<sea_orm::Value> + Send + Sync>;
+pub type FnInputTypeNoneConversion =
+    Box<dyn Fn(&ResolverContext<'_>) -> SeaResult<Option<sea_orm::Value>> + Send + Sync>;
+
 pub type FnOutputTypeConversion =
     Box<dyn Fn(&sea_orm::sea_query::Value) -> SeaResult<async_graphql::Value> + Send + Sync>;
 
@@ -17,6 +20,8 @@ pub struct TypesMapConfig {
     pub overwrites: BTreeMap<String, ConvertedType>,
     /// used to map entity_name.column_name input to a custom parser
     pub input_conversions: BTreeMap<String, FnInputTypeConversion>,
+    /// used to map entity_name.column_name input to a custom parser
+    pub input_none_conversions: BTreeMap<String, FnInputTypeNoneConversion>,
     /// used to map entity_name.column_name output to a custom formatter
     pub output_conversions: BTreeMap<String, FnOutputTypeConversion>,
     /// used to configure default time library
@@ -30,6 +35,7 @@ impl std::default::Default for TypesMapConfig {
         Self {
             overwrites: BTreeMap::new(),
             input_conversions: BTreeMap::new(),
+            input_none_conversions: BTreeMap::new(),
             output_conversions: BTreeMap::new(),
 
             #[cfg(all(not(feature = "with-time"), not(feature = "with-chrono")))]
@@ -203,6 +209,7 @@ impl TypesMapHelper {
     /// used to convert a GraphQL value into SeaORM value
     pub fn async_graphql_value_to_sea_orm_value<T>(
         &self,
+        resolver_context: &ResolverContext<'_>,
         column: &T::Column,
         value: &ValueAccessor,
     ) -> SeaResult<sea_orm::Value>
@@ -222,7 +229,7 @@ impl TypesMapHelper {
             .input_conversions
             .get(&format!("{entity_name}.{column_name}"))
         {
-            return parser.as_ref()(value);
+            return parser.as_ref()(resolver_context, value);
         }
 
         converted_value_to_sea_orm_value(
