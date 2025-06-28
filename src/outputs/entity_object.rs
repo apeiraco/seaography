@@ -40,17 +40,17 @@ pub struct EntityObjectBuilder {
 
 impl EntityObjectBuilder {
     /// used to get type name
-    pub fn type_name<T>(&self) -> String
+    pub fn type_name<T>(context: &BuilderContext) -> String
     where
         T: EntityTrait,
         <T as EntityTrait>::Model: Sync,
     {
         let name: String = <T as EntityName>::table_name(&T::default()).into();
-        self.context.entity_object.type_name.as_ref()(&name)
+        context.entity_object.type_name.as_ref()(&name)
     }
 
     /// used to get type name for basic version
-    pub fn basic_type_name<T>(&self) -> String
+    pub fn basic_type_name<T>(context: &BuilderContext) -> String
     where
         T: EntityTrait,
         <T as EntityTrait>::Model: Sync,
@@ -58,20 +58,20 @@ impl EntityObjectBuilder {
         let name: String = <T as EntityName>::table_name(&T::default()).into();
         format!(
             "{}{}",
-            self.context.entity_object.type_name.as_ref()(&name),
-            self.context.entity_object.basic_type_suffix
+            context.entity_object.type_name.as_ref()(&name),
+            context.entity_object.basic_type_suffix
         )
     }
 
     /// used to get column field name of entity column
-    pub fn column_name<T>(&self, column: &T::Column) -> String
+    pub fn column_name<T>(context: &BuilderContext, column: &T::Column) -> String
     where
         T: EntityTrait,
         <T as EntityTrait>::Model: Sync,
     {
-        let entity_name = self.type_name::<T>();
+        let entity_name = Self::type_name::<T>(context);
         let column_name: String = column.as_str().into();
-        self.context.entity_object.column_name.as_ref()(&entity_name, &column_name)
+        context.entity_object.column_name.as_ref()(&entity_name, &column_name)
     }
 
     /// used to get the GraphQL object of a SeaORM entity
@@ -80,7 +80,7 @@ impl EntityObjectBuilder {
         T: EntityTrait,
         <T as EntityTrait>::Model: Sync,
     {
-        let object_name = self.type_name::<T>();
+        let object_name = Self::type_name::<T>(self.context);
 
         self.basic_object::<T>(&object_name)
     }
@@ -91,7 +91,7 @@ impl EntityObjectBuilder {
         T: EntityTrait,
         <T as EntityTrait>::Model: Sync,
     {
-        let object_name = self.basic_type_name::<T>();
+        let object_name = Self::basic_type_name::<T>(self.context);
 
         self.basic_object::<T>(&object_name)
     }
@@ -102,19 +102,17 @@ impl EntityObjectBuilder {
         T: EntityTrait,
         <T as EntityTrait>::Model: Sync,
     {
-        let entity_name = self.type_name::<T>();
-
-        let types_map_helper = TypesMapHelper {
-            context: self.context,
-        };
+        let context = self.context;
+        let entity_name = Self::type_name::<T>(context);
 
         T::Column::iter().fold(Object::new(object_name), |object, column: T::Column| {
-            let column_name = self.column_name::<T>(&column);
+            let column_name = Self::column_name::<T>(context, &column);
 
             let column_def = column.def();
             let enum_type_name = column.enum_type_name();
 
-            let graphql_type = match types_map_helper.sea_orm_column_type_to_graphql_type(
+            let graphql_type = match TypesMapHelper::sea_orm_column_type_to_graphql_type(
+                context,
                 column_def.get_column_type(),
                 !column_def.is_null(),
                 enum_type_name,
@@ -135,14 +133,12 @@ impl EntityObjectBuilder {
                 _ => false,
             };
 
-            let guard = self
-                .context
+            let guard = context
                 .guards
                 .field_guards
                 .get(&format!("{}.{}", &object_name, &column_name));
 
-            let conversion_fn = self
-                .context
+            let conversion_fn = context
                 .types
                 .output_conversions
                 .get(&format!("{entity_name}.{column_name}"));
@@ -261,7 +257,11 @@ fn sea_query_value_to_graphql_value(
         #[cfg(feature = "with-chrono")]
         #[cfg_attr(docsrs, doc(cfg(feature = "with-chrono")))]
         sea_orm::sea_query::Value::ChronoDateTimeUtc(value) => {
-            value.map(|it| Value::from(it.to_string()))
+            if cfg!(feature = "with-chrono-datetime-utc-as-timestamp") {
+                value.map(|it| Value::from(it.timestamp_millis()))
+            } else {
+                value.map(|it| Value::from(it.to_string()))
+            }
         }
 
         #[cfg(feature = "with-chrono")]

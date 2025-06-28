@@ -160,27 +160,23 @@ impl std::default::Default for FilterTypesMapConfig {
 /// * provides entity filter object type mappings
 /// * helper functions that assist filtering on queries
 /// * helper function that generate input filter types
-pub struct FilterTypesMapHelper {
-    pub context: &'static BuilderContext,
-}
+pub struct FilterTypesMapHelper {}
 
 impl FilterTypesMapHelper {
     /// used to map sea orm column type to filter type
-    pub fn get_column_filter_type<T>(&self, column: &T::Column) -> Option<FilterType>
+    pub fn get_column_filter_type<T>(
+        context: &BuilderContext,
+        column: &T::Column,
+    ) -> Option<FilterType>
     where
         T: EntityTrait,
         <T as EntityTrait>::Model: Sync,
     {
-        let entity_object_builder = EntityObjectBuilder {
-            context: self.context,
-        };
-
-        let entity_name = entity_object_builder.type_name::<T>();
-        let column_name = entity_object_builder.column_name::<T>(column);
+        let entity_name = EntityObjectBuilder::type_name::<T>(context);
+        let column_name = EntityObjectBuilder::column_name::<T>(context, column);
 
         // used to honor overwrites
-        if let Some(ty) = self
-            .context
+        if let Some(ty) = context
             .filter_types
             .overwrites
             .get(&format!("{entity_name}.{column_name}"))
@@ -234,74 +230,68 @@ impl FilterTypesMapHelper {
     }
 
     /// used to get the GraphQL input value field for a SeaORM entity column
-    pub fn get_column_filter_input_value<T>(&self, column: &T::Column) -> Option<InputValue>
+    pub fn get_column_filter_input_value<T>(
+        context: &BuilderContext,
+        column: &T::Column,
+    ) -> Option<InputValue>
     where
         T: EntityTrait,
         <T as EntityTrait>::Model: Sync,
     {
-        let entity_object_builder = EntityObjectBuilder {
-            context: self.context,
-        };
-        let column_name = entity_object_builder.column_name::<T>(column);
+        let column_name = EntityObjectBuilder::column_name::<T>(context, column);
 
-        let filter_type: Option<FilterType> = self.get_column_filter_type::<T>(column);
+        let filter_type: Option<FilterType> = Self::get_column_filter_type::<T>(context, column);
 
         match filter_type {
             Some(filter_type) => match filter_type {
                 FilterType::Text => {
-                    let info = &self.context.filter_types.text_filter_info;
+                    let info = &context.filter_types.text_filter_info;
                     Some(InputValue::new(
                         column_name,
                         TypeRef::named(info.type_name.clone()),
                     ))
                 }
                 FilterType::String => {
-                    let info = &self.context.filter_types.string_filter_info;
+                    let info = &context.filter_types.string_filter_info;
                     Some(InputValue::new(
                         column_name,
                         TypeRef::named(info.type_name.clone()),
                     ))
                 }
                 FilterType::Integer => {
-                    let info = &self.context.filter_types.integer_filter_info;
+                    let info = &context.filter_types.integer_filter_info;
                     Some(InputValue::new(
                         column_name,
                         TypeRef::named(info.type_name.clone()),
                     ))
                 }
                 FilterType::Float => {
-                    let info = &self.context.filter_types.float_filter_info;
+                    let info = &context.filter_types.float_filter_info;
                     Some(InputValue::new(
                         column_name,
                         TypeRef::named(info.type_name.clone()),
                     ))
                 }
                 FilterType::Boolean => {
-                    let info = &self.context.filter_types.boolean_filter_info;
+                    let info = &context.filter_types.boolean_filter_info;
                     Some(InputValue::new(
                         column_name,
                         TypeRef::named(info.type_name.clone()),
                     ))
                 }
                 FilterType::Id => {
-                    let info = &self.context.filter_types.id_filter_info;
+                    let info = &context.filter_types.id_filter_info;
                     Some(InputValue::new(
                         column_name,
                         TypeRef::named(info.type_name.clone()),
                     ))
                 }
-                FilterType::Enumeration(name) => {
-                    let active_enum_filter_input_builder = ActiveEnumFilterInputBuilder {
-                        context: self.context,
-                    };
-
-                    Some(InputValue::new(
-                        column_name,
-                        TypeRef::named(
-                            active_enum_filter_input_builder.type_name_from_string(&name),
-                        ),
-                    ))
-                }
+                FilterType::Enumeration(name) => Some(InputValue::new(
+                    column_name,
+                    TypeRef::named(ActiveEnumFilterInputBuilder::type_name_from_string(
+                        context, &name,
+                    )),
+                )),
                 FilterType::Custom(type_name) => {
                     Some(InputValue::new(column_name, TypeRef::named(type_name)))
                 }
@@ -311,19 +301,19 @@ impl FilterTypesMapHelper {
     }
 
     /// used to get all basic input filter objects
-    pub fn get_input_filters(&self) -> Vec<InputObject> {
+    pub fn get_input_filters(context: &BuilderContext) -> Vec<InputObject> {
         vec![
-            self.generate_filter_input(&self.context.filter_types.text_filter_info),
-            self.generate_filter_input(&self.context.filter_types.string_filter_info),
-            self.generate_filter_input(&self.context.filter_types.integer_filter_info),
-            self.generate_filter_input(&self.context.filter_types.float_filter_info),
-            self.generate_filter_input(&self.context.filter_types.boolean_filter_info),
-            self.generate_filter_input(&self.context.filter_types.id_filter_info),
+            Self::generate_filter_input(&context.filter_types.text_filter_info),
+            Self::generate_filter_input(&context.filter_types.string_filter_info),
+            Self::generate_filter_input(&context.filter_types.integer_filter_info),
+            Self::generate_filter_input(&context.filter_types.float_filter_info),
+            Self::generate_filter_input(&context.filter_types.boolean_filter_info),
+            Self::generate_filter_input(&context.filter_types.id_filter_info),
         ]
     }
 
     /// used to convert a filter input info struct into input object
-    pub fn generate_filter_input(&self, filter_info: &FilterInfo) -> InputObject {
+    pub fn generate_filter_input(filter_info: &FilterInfo) -> InputObject {
         filter_info.supported_operations.iter().fold(
             InputObject::new(filter_info.type_name.to_string()),
             |object, cur| {
@@ -393,7 +383,7 @@ impl FilterTypesMapHelper {
 
     /// used to parse a filter input object and update the query condition
     pub fn prepare_column_condition<T>(
-        &self,
+        context: &BuilderContext,
         resolver_context: &ResolverContext<'_>,
         mut condition: Condition,
         filter: Option<ObjectAccessor<'_>>,
@@ -403,18 +393,14 @@ impl FilterTypesMapHelper {
         T: EntityTrait,
         <T as EntityTrait>::Model: Sync,
     {
-        let types_map_helper = TypesMapHelper {
-            context: self.context,
-        };
-
-        let filter_info = match self.get_column_filter_type::<T>(column) {
+        let filter_info = match Self::get_column_filter_type::<T>(context, column) {
             Some(filter_type) => match filter_type {
-                FilterType::Text => &self.context.filter_types.text_filter_info,
-                FilterType::String => &self.context.filter_types.string_filter_info,
-                FilterType::Integer => &self.context.filter_types.integer_filter_info,
-                FilterType::Float => &self.context.filter_types.float_filter_info,
-                FilterType::Boolean => &self.context.filter_types.boolean_filter_info,
-                FilterType::Id => &self.context.filter_types.id_filter_info,
+                FilterType::Text => &context.filter_types.text_filter_info,
+                FilterType::String => &context.filter_types.string_filter_info,
+                FilterType::Integer => &context.filter_types.integer_filter_info,
+                FilterType::Float => &context.filter_types.float_filter_info,
+                FilterType::Boolean => &context.filter_types.boolean_filter_info,
+                FilterType::Id => &context.filter_types.id_filter_info,
                 FilterType::Enumeration(_) => {
                     if let Some(filter) = filter {
                         return prepare_enumeration_condition::<T>(filter, column, condition);
@@ -422,24 +408,18 @@ impl FilterTypesMapHelper {
                         return Ok(condition);
                     }
                 }
-                FilterType::Custom(_) => {
-                    let entity_object_builder = EntityObjectBuilder {
-                        context: self.context,
-                    };
+                FilterType::Custom(iden) => {
+                    let entity_name = EntityObjectBuilder::type_name::<T>(context);
+                    let column_name = EntityObjectBuilder::column_name::<T>(context, column);
 
-                    let entity_name = entity_object_builder.type_name::<T>();
-                    let column_name = entity_object_builder.column_name::<T>(column);
-
-                    if let Some(filter_condition_fn) = self
-                        .context
+                    if let Some(filter_condition_fn) = context
                         .filter_types
                         .condition_functions
                         .get(&format!("{entity_name}.{column_name}"))
                     {
                         return filter_condition_fn(resolver_context, condition, filter.as_ref());
                     } else {
-                        // FIXME: add log warning to console
-                        return Ok(condition);
+                        panic!("No filter_condition_fn found for custom filter {entity_name}.{column_name} of type {iden}")
                     }
                 }
             },
@@ -451,67 +431,67 @@ impl FilterTypesMapHelper {
                 match operation {
                     FilterOperation::Equals => {
                         if let Some(value) = filter.get("eq") {
-                            let value = types_map_helper
-                                .async_graphql_value_to_sea_orm_value::<T>(
-                                    resolver_context,
-                                    column,
-                                    &value,
-                                )?;
+                            let value = TypesMapHelper::async_graphql_value_to_sea_orm_value::<T>(
+                                context,
+                                resolver_context,
+                                column,
+                                &value,
+                            )?;
                             condition = condition.add(column.eq(value));
                         }
                     }
                     FilterOperation::NotEquals => {
                         if let Some(value) = filter.get("ne") {
-                            let value = types_map_helper
-                                .async_graphql_value_to_sea_orm_value::<T>(
-                                    resolver_context,
-                                    column,
-                                    &value,
-                                )?;
+                            let value = TypesMapHelper::async_graphql_value_to_sea_orm_value::<T>(
+                                context,
+                                resolver_context,
+                                column,
+                                &value,
+                            )?;
                             condition = condition.add(column.ne(value));
                         }
                     }
                     FilterOperation::GreaterThan => {
                         if let Some(value) = filter.get("gt") {
-                            let value = types_map_helper
-                                .async_graphql_value_to_sea_orm_value::<T>(
-                                    resolver_context,
-                                    column,
-                                    &value,
-                                )?;
+                            let value = TypesMapHelper::async_graphql_value_to_sea_orm_value::<T>(
+                                context,
+                                resolver_context,
+                                column,
+                                &value,
+                            )?;
                             condition = condition.add(column.gt(value));
                         }
                     }
                     FilterOperation::GreaterThanEquals => {
                         if let Some(value) = filter.get("gte") {
-                            let value = types_map_helper
-                                .async_graphql_value_to_sea_orm_value::<T>(
-                                    resolver_context,
-                                    column,
-                                    &value,
-                                )?;
+                            let value = TypesMapHelper::async_graphql_value_to_sea_orm_value::<T>(
+                                context,
+                                resolver_context,
+                                column,
+                                &value,
+                            )?;
                             condition = condition.add(column.gte(value));
                         }
                     }
                     FilterOperation::LessThan => {
                         if let Some(value) = filter.get("lt") {
-                            let value = types_map_helper
-                                .async_graphql_value_to_sea_orm_value::<T>(
-                                    resolver_context,
-                                    column,
-                                    &value,
-                                )?;
+                            let value = TypesMapHelper::async_graphql_value_to_sea_orm_value::<T>(
+                                context,
+                                resolver_context,
+                                column,
+                                &value,
+                            )?;
                             condition = condition.add(column.lt(value));
                         }
                     }
                     FilterOperation::LessThanEquals => {
                         if let Some(value) = filter.get("lte") {
-                            let value = types_map_helper
-                                .async_graphql_value_to_sea_orm_value::<T>(
-                                    resolver_context,
-                                    column,
-                                    &value,
-                                )?;
+                            let value = TypesMapHelper::async_graphql_value_to_sea_orm_value::<T>(
+                                context,
+                                resolver_context,
+                                column,
+                                &value,
+                            )?;
                             condition = condition.add(column.lte(value));
                         }
                     }
@@ -521,7 +501,8 @@ impl FilterTypesMapHelper {
                                 .list()?
                                 .iter()
                                 .map(|v| {
-                                    types_map_helper.async_graphql_value_to_sea_orm_value::<T>(
+                                    TypesMapHelper::async_graphql_value_to_sea_orm_value::<T>(
+                                        context,
                                         resolver_context,
                                         column,
                                         &v,
@@ -537,7 +518,8 @@ impl FilterTypesMapHelper {
                                 .list()?
                                 .iter()
                                 .map(|v| {
-                                    types_map_helper.async_graphql_value_to_sea_orm_value::<T>(
+                                    TypesMapHelper::async_graphql_value_to_sea_orm_value::<T>(
+                                        context,
                                         resolver_context,
                                         column,
                                         &v,
@@ -559,12 +541,12 @@ impl FilterTypesMapHelper {
                     }
                     FilterOperation::Contains => {
                         if let Some(value) = filter.get("contains") {
-                            let value = types_map_helper
-                                .async_graphql_value_to_sea_orm_value::<T>(
-                                    resolver_context,
-                                    column,
-                                    &value,
-                                )?;
+                            let value = TypesMapHelper::async_graphql_value_to_sea_orm_value::<T>(
+                                context,
+                                resolver_context,
+                                column,
+                                &value,
+                            )?;
                             let s = match value {
                                 sea_orm::sea_query::Value::String(Some(s)) => s.to_string(),
                                 _ => value.to_string(),
@@ -574,12 +556,12 @@ impl FilterTypesMapHelper {
                     }
                     FilterOperation::StartsWith => {
                         if let Some(value) = filter.get("starts_with") {
-                            let value = types_map_helper
-                                .async_graphql_value_to_sea_orm_value::<T>(
-                                    resolver_context,
-                                    column,
-                                    &value,
-                                )?;
+                            let value = TypesMapHelper::async_graphql_value_to_sea_orm_value::<T>(
+                                context,
+                                resolver_context,
+                                column,
+                                &value,
+                            )?;
                             let s = match value {
                                 sea_orm::sea_query::Value::String(Some(s)) => s.to_string(),
                                 _ => value.to_string(),
@@ -589,12 +571,12 @@ impl FilterTypesMapHelper {
                     }
                     FilterOperation::EndsWith => {
                         if let Some(value) = filter.get("ends_with") {
-                            let value = types_map_helper
-                                .async_graphql_value_to_sea_orm_value::<T>(
-                                    resolver_context,
-                                    column,
-                                    &value,
-                                )?;
+                            let value = TypesMapHelper::async_graphql_value_to_sea_orm_value::<T>(
+                                context,
+                                resolver_context,
+                                column,
+                                &value,
+                            )?;
                             let s = match value {
                                 sea_orm::sea_query::Value::String(Some(s)) => s.to_string(),
                                 _ => value.to_string(),
@@ -604,12 +586,12 @@ impl FilterTypesMapHelper {
                     }
                     FilterOperation::Like => {
                         if let Some(value) = filter.get("like") {
-                            let value = types_map_helper
-                                .async_graphql_value_to_sea_orm_value::<T>(
-                                    resolver_context,
-                                    column,
-                                    &value,
-                                )?;
+                            let value = TypesMapHelper::async_graphql_value_to_sea_orm_value::<T>(
+                                context,
+                                resolver_context,
+                                column,
+                                &value,
+                            )?;
                             let s = match value {
                                 sea_orm::sea_query::Value::String(Some(s)) => s.to_string(),
                                 _ => value.to_string(),
@@ -619,12 +601,12 @@ impl FilterTypesMapHelper {
                     }
                     FilterOperation::NotLike => {
                         if let Some(value) = filter.get("not_like") {
-                            let value = types_map_helper
-                                .async_graphql_value_to_sea_orm_value::<T>(
-                                    resolver_context,
-                                    column,
-                                    &value,
-                                )?;
+                            let value = TypesMapHelper::async_graphql_value_to_sea_orm_value::<T>(
+                                context,
+                                resolver_context,
+                                column,
+                                &value,
+                            )?;
                             condition = condition.add(column.not_like(value.to_string()));
                         }
                     }
@@ -634,7 +616,8 @@ impl FilterTypesMapHelper {
                                 .list()?
                                 .iter()
                                 .map(|v| {
-                                    types_map_helper.async_graphql_value_to_sea_orm_value::<T>(
+                                    TypesMapHelper::async_graphql_value_to_sea_orm_value::<T>(
+                                        context,
                                         resolver_context,
                                         column,
                                         &v,
@@ -654,7 +637,8 @@ impl FilterTypesMapHelper {
                                 .list()?
                                 .iter()
                                 .map(|v| {
-                                    types_map_helper.async_graphql_value_to_sea_orm_value::<T>(
+                                    TypesMapHelper::async_graphql_value_to_sea_orm_value::<T>(
+                                        context,
                                         resolver_context,
                                         column,
                                         &v,

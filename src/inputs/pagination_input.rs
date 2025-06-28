@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use async_graphql::dynamic::{InputObject, InputValue, TypeRef, ValueAccessor};
 
 use crate::{BuilderContext, CursorInputBuilder, OffsetInputBuilder, PageInputBuilder};
@@ -36,36 +38,37 @@ impl std::default::Default for PaginationInputConfig {
     }
 }
 
-pub struct PaginationInputBuilder {
-    pub context: &'static BuilderContext,
-}
+pub struct PaginationInputBuilder {}
 
 impl PaginationInputBuilder {
     /// used to get type name
-    pub fn type_name(&self) -> String {
-        self.context.pagination_input.type_name.clone()
+    pub fn type_name<'a>(context: &'a BuilderContext, _object_name: &str) -> Cow<'a, str> {
+        Cow::Borrowed(&context.pagination_input.type_name)
     }
 
     /// used to get pagination input object
-    pub fn input_object(&self) -> InputObject {
-        InputObject::new(&self.context.pagination_input.type_name)
+    pub fn input_object(context: &BuilderContext) -> InputObject {
+        InputObject::new(&context.pagination_input.type_name)
             .field(InputValue::new(
-                &self.context.pagination_input.cursor,
-                TypeRef::named(&self.context.cursor_input.type_name),
+                &context.pagination_input.cursor,
+                TypeRef::named(&context.cursor_input.type_name),
             ))
             .field(InputValue::new(
-                &self.context.pagination_input.page,
-                TypeRef::named(&self.context.page_input.type_name),
+                &context.pagination_input.page,
+                TypeRef::named(&context.page_input.type_name),
             ))
             .field(InputValue::new(
-                &self.context.pagination_input.offset,
-                TypeRef::named(&self.context.offset_input.type_name),
+                &context.pagination_input.offset,
+                TypeRef::named(&context.offset_input.type_name),
             ))
             .oneof()
     }
 
     /// used to parse query input to pagination information structure
-    pub fn parse_object(&self, value: Option<ValueAccessor<'_>>) -> PaginationInput {
+    pub fn parse_object(
+        context: &BuilderContext,
+        value: Option<ValueAccessor<'_>>,
+    ) -> PaginationInput {
         if value.is_none() {
             return PaginationInput {
                 cursor: None,
@@ -77,33 +80,23 @@ impl PaginationInputBuilder {
         let binding = value.unwrap();
         let object = binding.object().unwrap();
 
-        let cursor_input_builder = CursorInputBuilder {
-            context: self.context,
-        };
-        let page_input_builder = PageInputBuilder {
-            context: self.context,
-        };
-        let offset_input_builder = OffsetInputBuilder {
-            context: self.context,
-        };
-
-        let cursor = if let Some(cursor) = object.get(&self.context.pagination_input.cursor) {
+        let cursor = if let Some(cursor) = object.get(&context.pagination_input.cursor) {
             let object = cursor.object().unwrap();
-            Some(cursor_input_builder.parse_object(&object))
+            Some(CursorInputBuilder::parse_object(context, &object))
         } else {
             None
         };
 
-        let page = if let Some(page) = object.get(&self.context.pagination_input.page) {
+        let page = if let Some(page) = object.get(&context.pagination_input.page) {
             let object = page.object().unwrap();
-            Some(page_input_builder.parse_object(&object))
+            Some(PageInputBuilder::parse_object(context, &object))
         } else {
             None
         };
 
-        let offset = if let Some(offset) = object.get(&self.context.pagination_input.offset) {
+        let offset = if let Some(offset) = object.get(&context.pagination_input.offset) {
             let object = offset.object().unwrap();
-            Some(offset_input_builder.parse_object(&object))
+            Some(OffsetInputBuilder::parse_object(context, &object))
         } else {
             None
         };

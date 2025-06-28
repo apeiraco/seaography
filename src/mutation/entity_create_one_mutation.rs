@@ -1,14 +1,26 @@
+use std::{future::Future, pin::Pin, sync::Arc};
+
 use async_graphql::dynamic::{
     Field, FieldFuture, FieldValue, InputValue, ObjectAccessor, ResolverContext, TypeRef,
 };
 use sea_orm::{
     ActiveModelTrait, DatabaseConnection, EntityTrait, IntoActiveModel, Iterable,
-    PrimaryKeyToColumn, PrimaryKeyTrait,
+    PrimaryKeyToColumn, PrimaryKeyTrait, TransactionTrait,
 };
 
 use crate::{
     BuilderContext, EntityInputBuilder, EntityObjectBuilder, EntityQueryFieldBuilder, GuardAction,
 };
+
+pub type CreateOneMutationFn<M> = Arc<
+    dyn for<'a> Fn(
+            &'a ResolverContext<'a>,
+            ObjectAccessor<'_>,
+        )
+            -> Pin<Box<dyn Future<Output = Result<M, async_graphql::Error>> + Send + 'a>>
+        + Send
+        + Sync,
+>;
 
 /// The configuration structure of EntityCreateOneMutationBuilder
 pub struct EntityCreateOneMutationConfig {
@@ -41,53 +53,40 @@ pub struct EntityCreateOneMutationBuilder {
 
 impl EntityCreateOneMutationBuilder {
     /// used to get mutation name for a SeaORM entity
-    pub fn type_name<T>(&self) -> String
+    pub fn type_name<T>(context: &BuilderContext) -> String
     where
         T: EntityTrait,
         <T as EntityTrait>::Model: Sync,
     {
-        let entity_query_field_builder = EntityQueryFieldBuilder {
-            context: self.context,
-        };
         format!(
             "{}{}",
-            entity_query_field_builder.type_name::<T>(),
-            self.context.entity_create_one_mutation.mutation_suffix
+            EntityQueryFieldBuilder::type_name::<T>(context),
+            context.entity_create_one_mutation.mutation_suffix
         )
     }
 
-    /// used to get the create mutation field for a SeaORM entity
-    pub fn to_field<T, A>(&self) -> Field
+    pub fn to_field_with_mutation_fn<T>(&self, mutation_fn: CreateOneMutationFn<T::Model>) -> Field
     where
         T: EntityTrait,
         <T as EntityTrait>::Model: Sync,
-        <T as EntityTrait>::Model: IntoActiveModel<A>,
-        A: ActiveModelTrait<Entity = T> + sea_orm::ActiveModelBehavior + std::marker::Send,
     {
-        let entity_input_builder = EntityInputBuilder {
-            context: self.context,
-        };
-        let entity_object_builder = EntityObjectBuilder {
-            context: self.context,
-        };
-
         let context = self.context;
+        let object_name: String = EntityObjectBuilder::type_name::<T>(context);
 
-        let object_name: String = entity_object_builder.type_name::<T>();
-        let guard = self.context.guards.entity_guards.get(&object_name);
-        let field_guards = &self.context.guards.field_guards;
+        let guard = context.guards.entity_guards.get(&object_name);
 
         Field::new(
-            self.type_name::<T>(),
-            TypeRef::named_nn(entity_object_builder.basic_type_name::<T>()),
-            move |ctx| {
-                FieldFuture::new(async move {
-                    let guard_flag = if let Some(guard) = guard {
-                        (*guard)(&ctx)
-                    } else {
-                        GuardAction::Allow
-                    };
+            Self::type_name::<T>(context),
+            TypeRef::named_nn(EntityObjectBuilder::basic_type_name::<T>(context)),
+            move |resolver_context| {
+                let mutation_fn = mutation_fn.clone();
+                let guard_flag = if let Some(guard) = guard {
+                    (*guard)(&resolver_context)
+                } else {
+                    GuardAction::Allow
+                };
 
+                FieldFuture::new(async move {
                     if let GuardAction::Block(reason) = guard_flag {
                         return match reason {
                             Some(reason) => Err::<Option<_>, async_graphql::Error>(
@@ -99,23 +98,22 @@ impl EntityCreateOneMutationBuilder {
                         };
                     }
 
-                    let entity_input_builder = EntityInputBuilder { context };
-                    let entity_object_builder = EntityObjectBuilder { context };
-                    let db = ctx.data::<DatabaseConnection>()?;
-                    let value_accessor = ctx
+                    let value_accessor = resolver_context
                         .args
                         .get(&context.entity_create_one_mutation.data_field)
                         .unwrap();
-                    let input_object = &value_accessor.object()?;
+                    let input_object = value_accessor.object()?;
+
+                    let field_guards = &context.guards.field_guards;
 
                     for (column, _) in input_object.iter() {
                         let field_guard = field_guards.get(&format!(
                             "{}.{}",
-                            entity_object_builder.type_name::<T>(),
+                            EntityObjectBuilder::type_name::<T>(context),
                             column
                         ));
                         let field_guard_flag = if let Some(field_guard) = field_guard {
-                            (*field_guard)(&ctx)
+                            (*field_guard)(&resolver_context)
                         } else {
                             GuardAction::Allow
                         };
@@ -131,14 +129,7 @@ impl EntityCreateOneMutationBuilder {
                         }
                     }
 
-                    let active_model = prepare_active_model::<T, A>(
-                        &entity_input_builder,
-                        &entity_object_builder,
-                        input_object,
-                        &ctx,
-                    )?;
-
-                    let result = active_model.insert(db).await?;
+                    let result = mutation_fn(&resolver_context, input_object).await?;
 
                     Ok(Some(FieldValue::owned_any(result)))
                 })
@@ -146,14 +137,71 @@ impl EntityCreateOneMutationBuilder {
         )
         .argument(InputValue::new(
             &context.entity_create_one_mutation.data_field,
-            TypeRef::named_nn(entity_input_builder.insert_type_name::<T>()),
+            TypeRef::named_nn(EntityInputBuilder::insert_type_name::<T>(context)),
         ))
+    }
+
+    pub fn default_mutation_fn<T, A>(
+        &self,
+        active_model_hooks: bool,
+    ) -> CreateOneMutationFn<T::Model>
+    where
+        T: EntityTrait,
+        <T as EntityTrait>::Model: Sync,
+        <T as EntityTrait>::Model: IntoActiveModel<A>,
+        A: ActiveModelTrait<Entity = T>
+            + sea_orm::ActiveModelBehavior
+            + std::marker::Send
+            + 'static,
+    {
+        let context = self.context;
+        Arc::new(move |resolve_context, input_object| {
+            let active_model_result =
+                prepare_active_model::<T, A>(context, &input_object, resolve_context);
+            let db = resolve_context.data::<DatabaseConnection>().cloned();
+
+            Box::pin(async move {
+                let active_model = active_model_result?;
+                let db = db?;
+
+                if active_model_hooks {
+                    let transaction = db.begin().await?;
+
+                    let active_model = active_model.before_save(&transaction, true).await?;
+
+                    let result: T::Model = active_model.insert(&transaction).await?;
+
+                    let result = A::after_save(result, &transaction, true).await?;
+
+                    transaction.commit().await?;
+
+                    Ok(result)
+                } else {
+                    let result: T::Model = active_model.insert(&db).await?;
+
+                    Ok(result)
+                }
+            })
+        })
+    }
+
+    /// used to get the create mutation field for a SeaORM entity
+    pub fn to_field<T, A>(&self, active_model_hooks: bool) -> Field
+    where
+        T: EntityTrait,
+        <T as EntityTrait>::Model: Sync,
+        <T as EntityTrait>::Model: IntoActiveModel<A>,
+        A: ActiveModelTrait<Entity = T>
+            + sea_orm::ActiveModelBehavior
+            + std::marker::Send
+            + 'static,
+    {
+        self.to_field_with_mutation_fn::<T>(self.default_mutation_fn::<T, A>(active_model_hooks))
     }
 }
 
 pub fn prepare_active_model<T, A>(
-    entity_input_builder: &EntityInputBuilder,
-    entity_object_builder: &EntityObjectBuilder,
+    context: &BuilderContext,
     input_object: &ObjectAccessor<'_>,
     resolver_context: &ResolverContext<'_>,
 ) -> async_graphql::Result<A>
@@ -163,7 +211,7 @@ where
     <T as EntityTrait>::Model: IntoActiveModel<A>,
     A: ActiveModelTrait<Entity = T> + sea_orm::ActiveModelBehavior + std::marker::Send,
 {
-    let mut data = entity_input_builder.parse_object::<T>(resolver_context, input_object)?;
+    let mut data = EntityInputBuilder::parse_object::<T>(context, resolver_context, input_object)?;
 
     let mut active_model = A::default();
 
@@ -178,7 +226,7 @@ where
             continue;
         }
 
-        match data.remove(&entity_object_builder.column_name::<T>(&column)) {
+        match data.remove(&EntityObjectBuilder::column_name::<T>(context, &column)) {
             Some(value) => {
                 active_model.set(column, value);
             }

@@ -20,35 +20,26 @@ impl std::default::Default for FilterInputConfig {
 }
 
 /// This builder is used to produce the filter input object of a SeaORM entity
-pub struct FilterInputBuilder {
-    pub context: &'static BuilderContext,
-}
+pub struct FilterInputBuilder {}
 
 impl FilterInputBuilder {
     /// used to get the filter input object name
     /// object_name is the name of the SeaORM Entity GraphQL object
-    pub fn type_name(&self, object_name: &str) -> String {
-        self.context.filter_input.type_name.as_ref()(object_name)
+    pub fn type_name(context: &BuilderContext, object_name: &str) -> String {
+        context.filter_input.type_name.as_ref()(object_name)
     }
 
     /// used to produce the filter input object of a SeaORM entity
-    pub fn to_object<T>(&self) -> InputObject
+    pub fn to_object<T>(context: &BuilderContext) -> InputObject
     where
         T: EntityTrait,
         <T as EntityTrait>::Model: Sync,
     {
-        let filter_types_map_helper = FilterTypesMapHelper {
-            context: self.context,
-        };
-
-        let entity_object_builder = EntityObjectBuilder {
-            context: self.context,
-        };
-        let entity_name = entity_object_builder.type_name::<T>();
-        let filter_name = self.type_name(&entity_name);
+        let entity_name = EntityObjectBuilder::type_name::<T>(context);
+        let filter_name = Self::type_name(context, &entity_name);
 
         let object = T::Column::iter().fold(InputObject::new(&filter_name), |object, column| {
-            match filter_types_map_helper.get_column_filter_input_value::<T>(&column) {
+            match FilterTypesMapHelper::get_column_filter_input_value::<T>(context, &column) {
                 Some(field) => object.field(field),
                 None => object,
             }

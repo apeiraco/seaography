@@ -65,35 +65,27 @@ impl std::default::Default for ConnectionObjectConfig {
 }
 
 /// This builder produces the Connection object for a SeaORM entity
-pub struct ConnectionObjectBuilder {
-    pub context: &'static BuilderContext,
-}
+pub struct ConnectionObjectBuilder {}
 
 impl ConnectionObjectBuilder {
     /// used to get type name
-    pub fn type_name(&self, object_name: &str) -> String {
-        self.context.connection_object.type_name.as_ref()(object_name)
+    pub fn type_name(context: &BuilderContext, object_name: &str) -> String {
+        context.connection_object.type_name.as_ref()(object_name)
     }
 
     /// used to get the Connection object for a SeaORM entity
-    pub fn to_object<T>(&self) -> Object
+    pub fn to_object<T>(context: &BuilderContext) -> Object
     where
         T: EntityTrait,
         <T as EntityTrait>::Model: Sync,
     {
-        let edge_object_builder = EdgeObjectBuilder {
-            context: self.context,
-        };
-        let entity_object_builder = EntityObjectBuilder {
-            context: self.context,
-        };
-        let object_name = entity_object_builder.type_name::<T>();
-        let name = self.type_name(&object_name);
+        let object_name = EntityObjectBuilder::type_name::<T>(context);
+        let name = Self::type_name(context, &object_name);
 
         Object::new(name)
             .field(Field::new(
-                &self.context.connection_object.page_info,
-                TypeRef::named_nn(&self.context.page_info_object.type_name),
+                &context.connection_object.page_info,
+                TypeRef::named_nn(&context.page_info_object.type_name),
                 |ctx| {
                     FieldFuture::new(async move {
                         let connection = ctx.parent_value.try_downcast_ref::<Connection<T>>()?;
@@ -102,8 +94,8 @@ impl ConnectionObjectBuilder {
                 },
             ))
             .field(Field::new(
-                &self.context.connection_object.pagination_info,
-                TypeRef::named(&self.context.pagination_info_object.type_name),
+                &context.connection_object.pagination_info,
+                TypeRef::named(&context.pagination_info_object.type_name),
                 |ctx| {
                     FieldFuture::new(async move {
                         let connection = ctx.parent_value.try_downcast_ref::<Connection<T>>()?;
@@ -120,7 +112,7 @@ impl ConnectionObjectBuilder {
                 },
             ))
             .field(Field::new(
-                &self.context.connection_object.nodes,
+                &context.connection_object.nodes,
                 TypeRef::named_nn_list_nn(&object_name),
                 |ctx| {
                     FieldFuture::new(async move {
@@ -132,8 +124,8 @@ impl ConnectionObjectBuilder {
                 },
             ))
             .field(Field::new(
-                &self.context.connection_object.edges,
-                TypeRef::named_nn_list_nn(edge_object_builder.type_name(&object_name)),
+                &context.connection_object.edges,
+                TypeRef::named_nn_list_nn(EdgeObjectBuilder::type_name(context, &object_name)),
                 |ctx| {
                     FieldFuture::new(async move {
                         let connection = ctx.parent_value.try_downcast_ref::<Connection<T>>()?;

@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use async_graphql::dynamic::{InputObject, InputValue, ObjectAccessor, TypeRef};
 
 use crate::BuilderContext;
@@ -30,37 +32,35 @@ impl std::default::Default for PageInputConfig {
 }
 
 /// This builder produces the page pagination options input object
-pub struct PageInputBuilder {
-    pub context: &'static BuilderContext,
-}
+pub struct PageInputBuilder {}
 
 impl PageInputBuilder {
     /// used to get type name
-    pub fn type_name(&self) -> String {
-        self.context.page_input.type_name.clone()
+    pub fn type_name<'a>(context: &'a BuilderContext) -> Cow<'a, str> {
+        Cow::Borrowed(&context.page_input.type_name)
     }
 
     /// used to get page pagination options object
-    pub fn input_object(&self) -> InputObject {
-        InputObject::new(&self.context.page_input.type_name)
+    pub fn input_object(context: &BuilderContext) -> InputObject {
+        InputObject::new(&context.page_input.type_name)
             .field(InputValue::new(
-                &self.context.page_input.limit,
+                &context.page_input.limit,
                 TypeRef::named_nn(TypeRef::INT),
             ))
             .field(InputValue::new(
-                &self.context.page_input.page,
+                &context.page_input.page,
                 TypeRef::named_nn(TypeRef::INT),
             ))
     }
 
     /// used to parse query input to page pagination options struct
-    pub fn parse_object(&self, object: &ObjectAccessor) -> PageInput {
+    pub fn parse_object(context: &BuilderContext, object: &ObjectAccessor) -> PageInput {
         let page = object
-            .get(&self.context.page_input.page)
+            .get(&context.page_input.page)
             .map_or_else(|| Ok(0), |v| v.u64())
             .unwrap_or(0);
         let limit = object
-            .get(&self.context.page_input.limit)
+            .get(&context.page_input.limit)
             .unwrap()
             .u64()
             .unwrap();

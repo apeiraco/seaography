@@ -87,41 +87,26 @@ impl Builder {
         T: EntityTrait,
         <T as EntityTrait>::Model: Sync,
     {
-        let entity_object_builder = EntityObjectBuilder {
-            context: self.context,
-        };
+        let context = self.context;
+        let entity_object_builder = EntityObjectBuilder { context };
         let entity_object = relations.into_iter().fold(
             entity_object_builder.to_object::<T>(),
             |entity_object, field| entity_object.field(field),
         );
 
-        let edge_object_builder = EdgeObjectBuilder {
-            context: self.context,
-        };
-        let edge = edge_object_builder.to_object::<T>();
+        let edge = EdgeObjectBuilder::to_object::<T>(context);
 
-        let connection_object_builder = ConnectionObjectBuilder {
-            context: self.context,
-        };
-        let connection = connection_object_builder.to_object::<T>();
+        let connection = ConnectionObjectBuilder::to_object::<T>(context);
 
         self.outputs.extend(vec![entity_object, edge, connection]);
 
-        let filter_input_builder = FilterInputBuilder {
-            context: self.context,
-        };
-        let filter = filter_input_builder.to_object::<T>();
+        let filter = FilterInputBuilder::to_object::<T>(context);
 
-        let order_input_builder = OrderInputBuilder {
-            context: self.context,
-        };
-        let order = order_input_builder.to_object::<T>();
+        let order = OrderInputBuilder::to_object::<T>(context);
         self.inputs.extend(vec![filter, order]);
 
-        let entity_query_field_builder = EntityQueryFieldBuilder {
-            context: self.context,
-        };
-        let query = entity_query_field_builder.to_field::<T>();
+        let query_field_builder = EntityQueryFieldBuilder { context };
+        let query = query_field_builder.to_field::<T>();
         self.queries.push(query);
 
         let schema = sea_orm::Schema::new(self.connection.get_database_backend());
@@ -129,54 +114,43 @@ impl Builder {
         self.metadata.insert(T::default().to_string(), metadata);
     }
 
-    pub fn register_entity_mutations<T, A>(&mut self)
+    pub fn register_entity_mutations<T, A>(&mut self, active_model_hooks: bool)
     where
         T: EntityTrait,
         <T as EntityTrait>::Model: Sync,
         <T as EntityTrait>::Model: IntoActiveModel<A>,
-        A: ActiveModelTrait<Entity = T> + sea_orm::ActiveModelBehavior + std::marker::Send,
+        A: ActiveModelTrait<Entity = T>
+            + sea_orm::ActiveModelBehavior
+            + std::marker::Send
+            + 'static,
     {
-        let entity_object_builder = EntityObjectBuilder {
-            context: self.context,
-        };
-        let basic_entity_object = entity_object_builder.basic_to_object::<T>();
+        let context = self.context;
+        let basic_entity_object_builder = EntityObjectBuilder { context };
+        let basic_entity_object = basic_entity_object_builder.basic_to_object::<T>();
         self.outputs.push(basic_entity_object);
 
-        let entity_input_builder = EntityInputBuilder {
-            context: self.context,
-        };
-
-        let entity_insert_input_object = entity_input_builder.insert_input_object::<T>();
-        let entity_update_input_object = entity_input_builder.update_input_object::<T>();
+        let entity_insert_input_object = EntityInputBuilder::insert_input_object::<T>(context);
+        let entity_update_input_object = EntityInputBuilder::update_input_object::<T>(context);
         self.inputs
             .extend(vec![entity_insert_input_object, entity_update_input_object]);
 
         // create one mutation
-        let entity_create_one_mutation_builder = EntityCreateOneMutationBuilder {
-            context: self.context,
-        };
-        let create_one_mutation = entity_create_one_mutation_builder.to_field::<T, A>();
+        let create_one_mutation_builder = EntityCreateOneMutationBuilder { context };
+        let create_one_mutation = create_one_mutation_builder.to_field::<T, A>(active_model_hooks);
         self.mutations.push(create_one_mutation);
 
         // create batch mutation
-        let entity_create_batch_mutation_builder: EntityCreateBatchMutationBuilder =
-            EntityCreateBatchMutationBuilder {
-                context: self.context,
-            };
-        let create_batch_mutation = entity_create_batch_mutation_builder.to_field::<T, A>();
+        let create_batch_mutation_builder = EntityCreateBatchMutationBuilder { context };
+        let create_batch_mutation =
+            create_batch_mutation_builder.to_field::<T, A>(active_model_hooks);
         self.mutations.push(create_batch_mutation);
 
-        // update mutation
-        let entity_update_mutation_builder = EntityUpdateMutationBuilder {
-            context: self.context,
-        };
-        let update_mutation = entity_update_mutation_builder.to_field::<T, A>();
+        let update_mutation_builder = EntityUpdateMutationBuilder { context };
+        let update_mutation = update_mutation_builder.to_field::<T, A>(active_model_hooks);
         self.mutations.push(update_mutation);
 
-        let entity_delete_mutation_builder = EntityDeleteMutationBuilder {
-            context: self.context,
-        };
-        let delete_mutation = entity_delete_mutation_builder.to_field::<T, A>();
+        let delete_mutation_builder = EntityDeleteMutationBuilder { context };
+        let delete_mutation = delete_mutation_builder.to_field::<T, A>(active_model_hooks);
         self.mutations.push(delete_mutation);
     }
 
@@ -217,22 +191,13 @@ impl Builder {
     where
         A: ActiveEnum,
     {
-        let active_enum_builder = ActiveEnumBuilder {
-            context: self.context,
-        };
-        let active_enum_filter_input_builder = ActiveEnumFilterInputBuilder {
-            context: self.context,
-        };
-        let filter_types_map_helper = FilterTypesMapHelper {
-            context: self.context,
-        };
-
-        let enumeration = active_enum_builder.enumeration::<A>();
+        let context = self.context;
+        let enumeration = ActiveEnumBuilder::enumeration::<A>(context);
         self.enumerations.push(enumeration);
 
-        let filter_info = active_enum_filter_input_builder.filter_info::<A>();
+        let filter_info = ActiveEnumFilterInputBuilder::filter_info::<A>(context);
         self.inputs
-            .push(filter_types_map_helper.generate_filter_input(&filter_info));
+            .push(FilterTypesMapHelper::generate_filter_input(&filter_info));
     }
 
     pub fn set_depth_limit(mut self, depth: Option<usize>) -> Self {
@@ -308,11 +273,7 @@ impl Builder {
             .fold(schema, |schema, enumeration| schema.register(enumeration));
 
         // register input filters
-        let filter_types_map_helper = FilterTypesMapHelper {
-            context: self.context,
-        };
-        let schema = filter_types_map_helper
-            .get_input_filters()
+        let schema = FilterTypesMapHelper::get_input_filters(self.context)
             .into_iter()
             .fold(schema, |schema, cur| schema.register(cur));
 
@@ -326,54 +287,13 @@ impl Builder {
         );
 
         let schema = schema
-            .register(
-                OrderByEnumBuilder {
-                    context: self.context,
-                }
-                .enumeration(),
-            )
-            .register(
-                CursorInputBuilder {
-                    context: self.context,
-                }
-                .input_object(),
-            )
-            .register(
-                CursorInputBuilder {
-                    context: self.context,
-                }
-                .input_object(),
-            )
-            .register(
-                PageInputBuilder {
-                    context: self.context,
-                }
-                .input_object(),
-            )
-            .register(
-                OffsetInputBuilder {
-                    context: self.context,
-                }
-                .input_object(),
-            )
-            .register(
-                PaginationInputBuilder {
-                    context: self.context,
-                }
-                .input_object(),
-            )
-            .register(
-                PageInfoObjectBuilder {
-                    context: self.context,
-                }
-                .to_object(),
-            )
-            .register(
-                PaginationInfoObjectBuilder {
-                    context: self.context,
-                }
-                .to_object(),
-            )
+            .register(OrderByEnumBuilder::enumeration(self.context))
+            .register(CursorInputBuilder::input_object(self.context))
+            .register(PageInputBuilder::input_object(self.context))
+            .register(OffsetInputBuilder::input_object(self.context))
+            .register(PaginationInputBuilder::input_object(self.context))
+            .register(PageInfoObjectBuilder::to_object(self.context))
+            .register(PaginationInfoObjectBuilder::to_object(self.context))
             .register(query)
             .register(mutation);
 
@@ -399,7 +319,7 @@ pub trait RelationBuilder {
 
 #[macro_export]
 macro_rules! register_entity {
-    ($builder:expr, $module_path:ident) => {
+    ($builder:expr, $module_path:ident, $active_model_hooks:expr) => {
         $builder.register_entity::<$module_path::Entity>(
             <$module_path::RelatedEntity as sea_orm::Iterable>::iter()
                 .map(|rel| seaography::RelationBuilder::get_relation(&rel, $builder.context))
@@ -409,7 +329,9 @@ macro_rules! register_entity {
             $builder.register_entity_dataloader_one_to_one($module_path::Entity, tokio::spawn);
         $builder =
             $builder.register_entity_dataloader_one_to_many($module_path::Entity, tokio::spawn);
-        $builder.register_entity_mutations::<$module_path::Entity, $module_path::ActiveModel>();
+        $builder.register_entity_mutations::<$module_path::Entity, $module_path::ActiveModel>(
+            $active_model_hooks,
+        );
     };
 }
 

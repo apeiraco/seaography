@@ -25,37 +25,31 @@ impl std::default::Default for ActiveEnumFilterInputConfig {
 }
 
 /// This builder produces a filter input for a SeaORM enumeration
-pub struct ActiveEnumFilterInputBuilder {
-    pub context: &'static BuilderContext,
-}
+pub struct ActiveEnumFilterInputBuilder {}
 
 impl ActiveEnumFilterInputBuilder {
     /// used to get filter input name for SeaORM enumeration
-    pub fn type_name<A: ActiveEnum>(&self) -> String {
+    pub fn type_name<A: ActiveEnum>(context: &BuilderContext) -> String {
         let enum_name = A::name().to_string();
-        self.context.active_enum_filter_input.type_name.as_ref()(&enum_name)
+        context.active_enum_filter_input.type_name.as_ref()(&enum_name)
     }
 
     /// used to get filter input name for SeaORM enumeration Iden
-    pub fn type_name_from_iden(&self, enum_name: &DynIden) -> String {
+    pub fn type_name_from_iden(context: &BuilderContext, enum_name: &DynIden) -> String {
         let enum_name = enum_name.to_string();
-        self.context.active_enum_filter_input.type_name.as_ref()(&enum_name)
+        context.active_enum_filter_input.type_name.as_ref()(&enum_name)
     }
 
     /// used to get filter input name from string
-    pub fn type_name_from_string(&self, enum_name: &str) -> String {
-        self.context.active_enum_filter_input.type_name.as_ref()(enum_name)
+    pub fn type_name_from_string(context: &BuilderContext, enum_name: &str) -> String {
+        context.active_enum_filter_input.type_name.as_ref()(enum_name)
     }
 
     /// used to map an active enum to an input filter info object
-    pub fn filter_info<A: ActiveEnum>(&self) -> FilterInfo {
-        let active_enum_builder = ActiveEnumBuilder {
-            context: self.context,
-        };
-
+    pub fn filter_info<A: ActiveEnum>(context: &BuilderContext) -> FilterInfo {
         FilterInfo {
-            type_name: self.type_name::<A>(),
-            base_type: active_enum_builder.type_name::<A>(),
+            type_name: Self::type_name::<A>(context),
+            base_type: ActiveEnumBuilder::type_name::<A>(context),
             supported_operations: BTreeSet::from([
                 FilterOperation::Equals,
                 FilterOperation::NotEquals,

@@ -7,7 +7,7 @@ use crate::{BuilderContext, EntityObjectBuilder, FilterTypesMapHelper};
 /// for a SeaORM entity using query filter inputs
 pub fn get_filter_conditions<T>(
     resolver_context: &ResolverContext<'_>,
-    context: &'static BuilderContext,
+    context: &BuilderContext,
     filters: Option<ValueAccessor>,
 ) -> Condition
 where
@@ -21,27 +21,29 @@ where
 /// used to prepare recursively the query filtering condition
 pub fn recursive_prepare_condition<T>(
     resolver_context: &ResolverContext<'_>,
-    context: &'static BuilderContext,
+    context: &BuilderContext,
     filters: Option<ObjectAccessor>,
 ) -> Condition
 where
     T: EntityTrait,
     <T as EntityTrait>::Model: Sync,
 {
-    let entity_object_builder = EntityObjectBuilder { context };
-    let filter_types_map_helper = FilterTypesMapHelper { context };
-
     let condition = T::Column::iter().fold(Condition::all(), |condition, column: T::Column| {
-        let column_name = entity_object_builder.column_name::<T>(&column);
+        let column_name = EntityObjectBuilder::column_name::<T>(context, &column);
 
         let filter = filters
             .as_ref()
             .and_then(|f| f.get(&column_name))
             .map(|m| m.object().unwrap());
 
-        filter_types_map_helper
-            .prepare_column_condition::<T>(resolver_context, condition, filter, &column)
-            .unwrap()
+        FilterTypesMapHelper::prepare_column_condition::<T>(
+            context,
+            resolver_context,
+            condition,
+            filter,
+            &column,
+        )
+        .unwrap()
     });
 
     let condition = if let Some(filters) = filters {

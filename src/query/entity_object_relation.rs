@@ -35,14 +35,10 @@ impl EntityObjectRelationBuilder {
         } else {
             name.to_lower_camel_case()
         };
-        let context: &'static BuilderContext = self.context;
-        let entity_object_builder = EntityObjectBuilder { context };
-        let connection_object_builder = ConnectionObjectBuilder { context };
-        let filter_input_builder = FilterInputBuilder { context };
-        let order_input_builder = OrderInputBuilder { context };
 
-        let object_name: String = entity_object_builder.type_name::<R>();
-        let guard = self.context.guards.entity_guards.get(&object_name);
+        let context = self.context;
+        let object_name: String = EntityObjectBuilder::type_name::<R>(context);
+        let guard = context.guards.entity_guards.get(&object_name);
 
         let from_col = <T::Column as std::str::FromStr>::from_str(
             relation_definition
@@ -94,7 +90,7 @@ impl EntityObjectRelationBuilder {
                     let filters = get_filter_conditions::<R>(&ctx, context, filters);
 
                     let order_by = ctx.args.get(&context.entity_query_field.order_by);
-                    let order_by = OrderInputBuilder { context }.parse_object::<R>(order_by);
+                    let order_by = OrderInputBuilder::parse_object::<R>(context, order_by);
                     let key = KeyComplex::<R> {
                         key: vec![parent.get(from_col)],
                         meta: HashableGroupKey::<R> {
@@ -116,9 +112,8 @@ impl EntityObjectRelationBuilder {
             }),
             true => Field::new(
                 name,
-                TypeRef::named_nn(connection_object_builder.type_name(&object_name)),
+                TypeRef::named_nn(ConnectionObjectBuilder::type_name(context, &object_name)),
                 move |ctx| {
-                    let context: &'static BuilderContext = context;
                     FieldFuture::new(async move {
                         let guard_flag = if let Some(guard) = guard {
                             (*guard)(&ctx)
@@ -149,7 +144,7 @@ impl EntityObjectRelationBuilder {
                         let filters = get_filter_conditions::<R>(&ctx, context, filters);
 
                         let order_by = ctx.args.get(&context.entity_query_field.order_by);
-                        let order_by = OrderInputBuilder { context }.parse_object::<R>(order_by);
+                        let order_by = OrderInputBuilder::parse_object::<R>(context, order_by);
                         let key = KeyComplex::<R> {
                             key: vec![parent.get(from_col)],
                             meta: HashableGroupKey::<R> {
@@ -163,8 +158,7 @@ impl EntityObjectRelationBuilder {
                         let values = loader.load_one(key).await?;
 
                         let pagination = ctx.args.get(&context.entity_query_field.pagination);
-                        let pagination =
-                            PaginationInputBuilder { context }.parse_object(pagination);
+                        let pagination = PaginationInputBuilder::parse_object(context, pagination);
 
                         let connection: Connection<R> = apply_memory_pagination(values, pagination);
 
@@ -179,11 +173,11 @@ impl EntityObjectRelationBuilder {
             true => field
                 .argument(InputValue::new(
                     &context.entity_query_field.filters,
-                    TypeRef::named(filter_input_builder.type_name(&object_name)),
+                    TypeRef::named(FilterInputBuilder::type_name(context, &object_name)),
                 ))
                 .argument(InputValue::new(
                     &context.entity_query_field.order_by,
-                    TypeRef::named(order_input_builder.type_name(&object_name)),
+                    TypeRef::named(OrderInputBuilder::type_name(context, &object_name)),
                 ))
                 .argument(InputValue::new(
                     &context.entity_query_field.pagination,

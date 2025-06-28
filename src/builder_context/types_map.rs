@@ -63,34 +63,33 @@ impl std::default::Default for TypesMapConfig {
 }
 
 /// The TypesMapHelper is used to provide type mapping for entity objects
-pub struct TypesMapHelper {
-    pub context: &'static BuilderContext,
-}
+pub struct TypesMapHelper {}
 
 impl TypesMapHelper {
     /// used to map a sea_orm column to the converted type target
-    pub fn get_column_type<T>(&self, column: &T::Column) -> ConvertedType
+    pub fn get_column_type<T>(context: &BuilderContext, column: &T::Column) -> ConvertedType
     where
         T: EntityTrait,
         <T as EntityTrait>::Model: Sync,
     {
-        let entity_object_builder = EntityObjectBuilder {
-            context: self.context,
-        };
-        let entity_name = entity_object_builder.type_name::<T>();
-        let column_name = entity_object_builder.column_name::<T>(column);
+        let entity_name = EntityObjectBuilder::type_name::<T>(context);
+        let column_name = EntityObjectBuilder::column_name::<T>(context, column);
 
-        self.get_column_type_helper(&entity_name, &column_name, column.def().get_column_type())
+        Self::get_column_type_helper(
+            context,
+            &entity_name,
+            &column_name,
+            column.def().get_column_type(),
+        )
     }
 
     /// helper function used to determine the conversion type of a column type
     fn get_column_type_helper(
-        &self,
+        context: &BuilderContext,
         entity_name: &str,
         column_name: &str,
         column_type: &ColumnType,
     ) -> ConvertedType {
-        let context = self.context;
         let name = format!("{entity_name}.{column_name}");
 
         if let Some(overwrite) = context.types.overwrites.get(&name) {
@@ -190,8 +189,12 @@ impl TypesMapHelper {
             ColumnType::Array(_) => ConvertedType::String,
             #[cfg(feature = "with-postgres-array")]
             ColumnType::Array(ty) => {
-                let inner =
-                    self.get_column_type_helper(entity_name, &format!("{}.array", column_name), ty);
+                let inner = Self::get_column_type_helper(
+                    context,
+                    entity_name,
+                    &format!("{column_name}.array"),
+                    ty,
+                );
                 ConvertedType::Array(Box::new(inner))
             }
 
@@ -210,7 +213,7 @@ impl TypesMapHelper {
 
     /// used to convert a GraphQL value into SeaORM value
     pub fn async_graphql_value_to_sea_orm_value<T>(
-        &self,
+        context: &BuilderContext,
         resolver_context: &ResolverContext<'_>,
         column: &T::Column,
         value: &ValueAccessor,
@@ -219,14 +222,10 @@ impl TypesMapHelper {
         T: EntityTrait,
         <T as EntityTrait>::Model: Sync,
     {
-        let entity_object_builder = EntityObjectBuilder {
-            context: self.context,
-        };
-        let entity_name = entity_object_builder.type_name::<T>();
-        let column_name = entity_object_builder.column_name::<T>(column);
+        let entity_name = EntityObjectBuilder::type_name::<T>(context);
+        let column_name = EntityObjectBuilder::column_name::<T>(context, column);
 
-        if let Some(parser) = self
-            .context
+        if let Some(parser) = context
             .types
             .input_conversions
             .get(&format!("{entity_name}.{column_name}"))
@@ -235,7 +234,7 @@ impl TypesMapHelper {
         }
 
         converted_value_to_sea_orm_value(
-            &self.get_column_type::<T>(column),
+            &Self::get_column_type::<T>(context, column),
             value,
             &entity_name,
             &column_name,
@@ -245,15 +244,11 @@ impl TypesMapHelper {
     /// used to map from a SeaORM column type to an async_graphql type
     /// None indicates that we do not support the type
     pub fn sea_orm_column_type_to_graphql_type(
-        &self,
+        context: &BuilderContext,
         ty: &ColumnType,
         not_null: bool,
         enum_type_name: Option<&'static str>,
     ) -> Option<TypeRef> {
-        let active_enum_builder = ActiveEnumBuilder {
-            context: self.context,
-        };
-
         match enum_type_name {
             Some(enum_type_name) => Some(TypeRef::named(format!(
                 "{}Enum",
@@ -293,15 +288,15 @@ impl TypesMapHelper {
                 ColumnType::Json | ColumnType::JsonBinary => None,
                 #[cfg(feature = "with-json-as-scalar")]
                 ColumnType::Json | ColumnType::JsonBinary => {
-                    Some(TypeRef::named(&self.context.types.json_name))
+                    Some(TypeRef::named(&context.types.json_name))
                 }
                 ColumnType::Uuid => Some(TypeRef::named(TypeRef::STRING)),
                 ColumnType::Enum {
                     name: enum_name,
                     variants: _,
-                } => Some(TypeRef::named(
-                    active_enum_builder.type_name_from_iden(enum_name),
-                )),
+                } => Some(TypeRef::named(ActiveEnumBuilder::type_name_from_iden(
+                    context, enum_name,
+                ))),
                 ColumnType::Cidr | ColumnType::Inet | ColumnType::MacAddr => {
                     Some(TypeRef::named(TypeRef::STRING))
                 }
@@ -337,13 +332,18 @@ impl TypesMapHelper {
                     // - always pass false:
                     //   pros: always technically workable for queries (annoying for non-null data)
                     //   conts: bad for inserts
-                    let iden_type = self.sea_orm_column_type_to_graphql_type(
+                    let iden_type = Self::sea_orm_column_type_to_graphql_type(
+                        context,
                         iden.as_ref(),
                         true,
                         enum_type_name,
                     );
                     iden_type.map(|it| TypeRef::List(Box::new(it)))
                 }
+
+                #[cfg(feature = "with-custom-as-json")]
+                ColumnType::Custom(iden) => Some(TypeRef::named(iden.to_string())),
+                #[cfg(not(feature = "with-custom-as-json"))]
                 ColumnType::Custom(_iden) => Some(TypeRef::named(TypeRef::STRING)),
                 _ => None,
             },
@@ -466,6 +466,9 @@ pub fn converted_type_to_sea_orm_array_type(
         #[cfg(feature = "with-postgres-array")]
         ConvertedType::Array(_) => Err(crate::SeaographyError::NestedArrayConversionError),
         ConvertedType::Enum(_) => Ok(sea_orm::sea_query::value::ArrayType::String),
+        #[cfg(feature = "with-custom-as-json")]
+        ConvertedType::Custom(_) => Ok(sea_orm::sea_query::value::ArrayType::Json),
+        #[cfg(not(feature = "with-custom-as-json"))]
         ConvertedType::Custom(_) => Ok(sea_orm::sea_query::value::ArrayType::String),
         #[cfg(feature = "with-json")]
         ConvertedType::Json => Ok(sea_orm::sea_query::value::ArrayType::String),
@@ -475,8 +478,16 @@ pub fn converted_type_to_sea_orm_array_type(
         ConvertedType::ChronoTime => Ok(sea_orm::sea_query::value::ArrayType::String),
         #[cfg(feature = "with-chrono")]
         ConvertedType::ChronoDateTime => Ok(sea_orm::sea_query::value::ArrayType::String),
-        #[cfg(feature = "with-chrono")]
+        #[cfg(all(
+            feature = "with-chrono",
+            not(feature = "with-chrono-datetime-utc-as-timestamp")
+        ))]
         ConvertedType::ChronoDateTimeUtc => Ok(sea_orm::sea_query::value::ArrayType::String),
+        #[cfg(all(
+            feature = "with-chrono",
+            feature = "with-chrono-datetime-utc-as-timestamp"
+        ))]
+        ConvertedType::ChronoDateTimeUtc => Ok(sea_orm::sea_query::value::ArrayType::BigInt),
         #[cfg(feature = "with-chrono")]
         ConvertedType::ChronoDateTimeLocal => Ok(sea_orm::sea_query::value::ArrayType::String),
         #[cfg(feature = "with-chrono")]
@@ -565,10 +576,32 @@ pub fn converted_value_to_sea_orm_value(
             let value = value.f64()?;
             sea_orm::Value::Double(Some(value))
         }
-        ConvertedType::String | ConvertedType::Enum(_) | ConvertedType::Custom(_) if is_null => {
-            sea_orm::Value::String(None)
+        #[cfg(feature = "with-custom-as-json")]
+        ConvertedType::Custom(_) => {
+            if is_null {
+                sea_orm::Value::Json(None)
+            } else {
+                let value = value.deserialize();
+
+                sea_orm::Value::Json(Some(Box::new(value.map_err(|err| {
+                    crate::SeaographyError::TypeConversionError(
+                        format!("{err:?}"),
+                        format!("Json - {entity_name}.{column_name}"),
+                    )
+                })?)))
+            }
         }
-        ConvertedType::String | ConvertedType::Enum(_) | ConvertedType::Custom(_) => {
+        #[cfg(not(feature = "with-custom-as-json"))]
+        ConvertedType::Custom(_) => {
+            if is_null {
+                sea_orm::Value::String(None)
+            } else {
+                let value = value.string()?;
+                sea_orm::Value::String(Some(Box::new(value.to_string())))
+            }
+        }
+        ConvertedType::String | ConvertedType::Enum(_) if is_null => sea_orm::Value::String(None),
+        ConvertedType::String | ConvertedType::Enum(_) => {
             let value = value.string()?;
             sea_orm::Value::String(Some(Box::new(value.to_string())))
         }
@@ -599,7 +632,7 @@ pub fn converted_value_to_sea_orm_value(
             sea_orm::Value::Json(Some(Box::new(value.map_err(|err| {
                 crate::SeaographyError::TypeConversionError(
                     format!("{err:?}"),
-                    format!("Json - {}.{}", entity_name, column_name),
+                    format!("Json - {entity_name}.{column_name}"),
                 )
             })?)))
         }
@@ -612,7 +645,7 @@ pub fn converted_value_to_sea_orm_value(
                     .map_err(|e| {
                     crate::SeaographyError::TypeConversionError(
                         e.to_string(),
-                        format!("ChronoDate - {}.{}", entity_name, column_name),
+                        format!("ChronoDate - {entity_name}.{column_name}"),
                     )
                 })?;
 
@@ -627,7 +660,7 @@ pub fn converted_value_to_sea_orm_value(
                     .map_err(|e| {
                     crate::SeaographyError::TypeConversionError(
                         e.to_string(),
-                        format!("ChronoTime - {}.{}", entity_name, column_name),
+                        format!("ChronoTime - {entity_name}.{column_name}"),
                     )
                 })?;
 
@@ -644,7 +677,7 @@ pub fn converted_value_to_sea_orm_value(
             .map_err(|e| {
                 crate::SeaographyError::TypeConversionError(
                     e.to_string(),
-                    format!("ChronoDateTime - {}.{}", entity_name, column_name),
+                    format!("ChronoDateTime - {entity_name}.{column_name}"),
                 )
             })?;
 
@@ -654,15 +687,28 @@ pub fn converted_value_to_sea_orm_value(
         ConvertedType::ChronoDateTimeUtc if is_null => sea_orm::Value::ChronoDateTimeUtc(None),
         #[cfg(feature = "with-chrono")]
         ConvertedType::ChronoDateTimeUtc => {
-            use std::str::FromStr;
+            #[cfg(not(feature = "with-chrono-datetime-utc-as-timestamp"))]
+            let value = {
+                use std::str::FromStr;
+                sea_orm::entity::prelude::ChronoDateTimeUtc::from_str(value.string()?).map_err(
+                    |e| {
+                        crate::SeaographyError::TypeConversionError(
+                            e.to_string(),
+                            format!("ChronoDateTimeUtc - {entity_name}.{column_name}"),
+                        )
+                    },
+                )?
+            };
 
-            let value = sea_orm::entity::prelude::ChronoDateTimeUtc::from_str(value.string()?)
-                .map_err(|e| {
-                    crate::SeaographyError::TypeConversionError(
-                        e.to_string(),
-                        format!("ChronoDateTimeUtc - {}.{}", entity_name, column_name),
-                    )
-                })?;
+            #[cfg(feature = "with-chrono-datetime-utc-as-timestamp")]
+            let value =
+                sea_orm::entity::prelude::ChronoDateTimeUtc::from_timestamp_millis(value.i64()?)
+                    .ok_or_else(|| {
+                        crate::SeaographyError::TypeConversionError(
+                            "Invalid timestamp".to_string(),
+                            format!("ChronoDateTimeUtc - {entity_name}.{column_name}"),
+                        )
+                    })?;
 
             sea_orm::Value::ChronoDateTimeUtc(Some(Box::new(value)))
         }
@@ -676,7 +722,7 @@ pub fn converted_value_to_sea_orm_value(
                 .map_err(|e| {
                     crate::SeaographyError::TypeConversionError(
                         e.to_string(),
-                        format!("ChronoDateTimeLocal - {}.{}", entity_name, column_name),
+                        format!("ChronoDateTimeLocal - {entity_name}.{column_name}"),
                     )
                 })?;
 
@@ -695,10 +741,7 @@ pub fn converted_value_to_sea_orm_value(
             .map_err(|e| {
                 crate::SeaographyError::TypeConversionError(
                     e.to_string(),
-                    format!(
-                        "ChronoDateTimeWithTimeZone - {}.{}",
-                        entity_name, column_name
-                    ),
+                    format!("ChronoDateTimeWithTimeZone - {entity_name}.{column_name}"),
                 )
             })?;
 
@@ -708,8 +751,6 @@ pub fn converted_value_to_sea_orm_value(
         ConvertedType::TimeDate if is_null => sea_orm::Value::TimeDate(None),
         #[cfg(feature = "with-time")]
         ConvertedType::TimeDate => {
-            use std::str::FromStr;
-
             let value = sea_orm::entity::prelude::TimeDate::parse(
                 value.string()?,
                 sea_orm::sea_query::value::time_format::FORMAT_DATE,
@@ -717,7 +758,7 @@ pub fn converted_value_to_sea_orm_value(
             .map_err(|e| {
                 crate::SeaographyError::TypeConversionError(
                     e.to_string(),
-                    format!("TimeDate - {}.{}", entity_name, column_name),
+                    format!("TimeDate - {entity_name}.{column_name}"),
                 )
             })?;
 
@@ -727,8 +768,6 @@ pub fn converted_value_to_sea_orm_value(
         ConvertedType::TimeTime if is_null => sea_orm::Value::TimeTime(None),
         #[cfg(feature = "with-time")]
         ConvertedType::TimeTime => {
-            use std::str::FromStr;
-
             let value = sea_orm::entity::prelude::TimeTime::parse(
                 value.string()?,
                 sea_orm::sea_query::value::time_format::FORMAT_TIME,
@@ -736,7 +775,7 @@ pub fn converted_value_to_sea_orm_value(
             .map_err(|e| {
                 crate::SeaographyError::TypeConversionError(
                     e.to_string(),
-                    format!("TimeTime - {}.{}", entity_name, column_name),
+                    format!("TimeTime - {entity_name}.{column_name}"),
                 )
             })?;
 
@@ -746,8 +785,6 @@ pub fn converted_value_to_sea_orm_value(
         ConvertedType::TimeDateTime if is_null => sea_orm::Value::TimeDateTime(None),
         #[cfg(feature = "with-time")]
         ConvertedType::TimeDateTime => {
-            use std::str::FromStr;
-
             let value = sea_orm::entity::prelude::TimeDateTime::parse(
                 value.string()?,
                 sea_orm::sea_query::value::time_format::FORMAT_DATETIME,
@@ -755,7 +792,7 @@ pub fn converted_value_to_sea_orm_value(
             .map_err(|e| {
                 crate::SeaographyError::TypeConversionError(
                     e.to_string(),
-                    format!("TimeDateTime - {}.{}", entity_name, column_name),
+                    format!("TimeDateTime - {entity_name}.{column_name}"),
                 )
             })?;
 
@@ -767,7 +804,6 @@ pub fn converted_value_to_sea_orm_value(
         }
         #[cfg(feature = "with-time")]
         ConvertedType::TimeDateTimeWithTimeZone => {
-            use std::str::FromStr;
             let value = sea_orm::entity::prelude::TimeDateTimeWithTimeZone::parse(
                 value.string()?,
                 sea_orm::sea_query::value::time_format::FORMAT_DATETIME_TZ,
@@ -775,7 +811,7 @@ pub fn converted_value_to_sea_orm_value(
             .map_err(|e| {
                 crate::SeaographyError::TypeConversionError(
                     e.to_string(),
-                    format!("TimeDateTimeWithTimeZone - {}.{}", entity_name, column_name),
+                    format!("TimeDateTimeWithTimeZone - {entity_name}.{column_name}"),
                 )
             })?;
 
@@ -790,7 +826,7 @@ pub fn converted_value_to_sea_orm_value(
             let value = sea_orm::entity::prelude::Uuid::from_str(value.string()?).map_err(|e| {
                 crate::SeaographyError::TypeConversionError(
                     e.to_string(),
-                    format!("Uuid - {}.{}", entity_name, column_name),
+                    format!("Uuid - {entity_name}.{column_name}"),
                 )
             })?;
 
@@ -806,7 +842,7 @@ pub fn converted_value_to_sea_orm_value(
                 sea_orm::entity::prelude::Decimal::from_str(value.string()?).map_err(|e| {
                     crate::SeaographyError::TypeConversionError(
                         e.to_string(),
-                        format!("Decimal - {}.{}", entity_name, column_name),
+                        format!("Decimal - {entity_name}.{column_name}"),
                     )
                 })?;
 
@@ -822,7 +858,7 @@ pub fn converted_value_to_sea_orm_value(
                 sea_orm::entity::prelude::BigDecimal::from_str(value.string()?).map_err(|e| {
                     crate::SeaographyError::TypeConversionError(
                         e.to_string(),
-                        format!("BigDecimal - {}.{}", entity_name, column_name),
+                        format!("BigDecimal - {entity_name}.{column_name}"),
                     )
                 })?;
 
@@ -830,20 +866,18 @@ pub fn converted_value_to_sea_orm_value(
         }
         #[cfg(feature = "with-postgres-array")]
         ConvertedType::Array(ty) if is_null => {
-            sea_orm::Value::Array(converted_type_to_sea_orm_array_type(&ty)?, None)
+            sea_orm::Value::Array(converted_type_to_sea_orm_array_type(ty)?, None)
         }
         #[cfg(feature = "with-postgres-array")]
         ConvertedType::Array(ty) => {
             let list_value = value
                 .list()?
                 .iter()
-                .map(|value| {
-                    converted_value_to_sea_orm_value(&*ty, &value, entity_name, column_name)
-                })
+                .map(|value| converted_value_to_sea_orm_value(ty, &value, entity_name, column_name))
                 .collect::<SeaResult<Vec<sea_orm::Value>>>()?;
 
             sea_orm::Value::Array(
-                converted_type_to_sea_orm_array_type(&ty)?,
+                converted_type_to_sea_orm_array_type(ty)?,
                 Some(Box::new(list_value)),
             )
         } // FIXME: support ip type

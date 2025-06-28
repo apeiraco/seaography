@@ -1,4 +1,9 @@
-use async_graphql::dynamic::{Field, FieldFuture, FieldValue, InputValue, TypeRef};
+use std::{future::Future, pin::Pin, sync::Arc};
+
+use async_graphql::dynamic::{
+    Field, FieldFuture, FieldValue, InputValue, ObjectAccessor, ResolverContext, TypeRef,
+    ValueAccessor,
+};
 use sea_orm::{
     ActiveModelTrait, DatabaseConnection, EntityTrait, IntoActiveModel, QueryFilter,
     TransactionTrait,
@@ -9,6 +14,16 @@ use crate::{
     EntityObjectBuilder, EntityQueryFieldBuilder, FilterInputBuilder, GuardAction,
 };
 
+pub type UpdateMutationFn<M> = Arc<
+    dyn for<'a> Fn(
+            &ResolverContext<'a>,
+            Option<ValueAccessor<'_>>,
+            ObjectAccessor<'_>,
+        ) -> Pin<
+            Box<dyn Future<Output = Result<Vec<M>, async_graphql::Error>> + Send + 'a>,
+        > + Send
+        + Sync,
+>;
 /// The configuration structure of EntityUpdateMutationBuilder
 pub struct EntityUpdateMutationConfig {
     /// suffix that is appended on update mutations
@@ -45,56 +60,50 @@ pub struct EntityUpdateMutationBuilder {
 
 impl EntityUpdateMutationBuilder {
     /// used to get mutation name for a SeaORM entity
-    pub fn type_name<T>(&self) -> String
+    pub fn type_name<T>(context: &BuilderContext) -> String
     where
         T: EntityTrait,
         <T as EntityTrait>::Model: Sync,
     {
-        let entity_query_field_builder = EntityQueryFieldBuilder {
-            context: self.context,
-        };
         format!(
             "{}{}",
-            entity_query_field_builder.type_name::<T>(),
-            self.context.entity_update_mutation.mutation_suffix
+            EntityQueryFieldBuilder::type_name::<T>(context),
+            context.entity_update_mutation.mutation_suffix
         )
     }
 
-    /// used to get the update mutation field for a SeaORM entity
-    pub fn to_field<T, A>(&self) -> Field
+    pub fn to_field_with_mutation_fn<T>(&self, mutation_fn: UpdateMutationFn<T::Model>) -> Field
     where
         T: EntityTrait,
         <T as EntityTrait>::Model: Sync,
-        <T as EntityTrait>::Model: IntoActiveModel<A>,
-        A: ActiveModelTrait<Entity = T> + sea_orm::ActiveModelBehavior + std::marker::Send,
     {
-        let entity_input_builder = EntityInputBuilder {
-            context: self.context,
-        };
-        let entity_filter_input_builder = FilterInputBuilder {
-            context: self.context,
-        };
-        let entity_object_builder = EntityObjectBuilder {
-            context: self.context,
-        };
-        let object_name: String = entity_object_builder.type_name::<T>();
-
         let context = self.context;
+        let object_name: String = EntityObjectBuilder::type_name::<T>(context);
 
-        let guard = self.context.guards.entity_guards.get(&object_name);
-        let field_guards = &self.context.guards.field_guards;
+        let guard = context.guards.entity_guards.get(&object_name);
+
+        let data_input_value = InputValue::new(
+            &context.entity_update_mutation.data_field,
+            TypeRef::named_nn(EntityInputBuilder::update_type_name::<T>(context)),
+        );
+
+        let filter_input_value = InputValue::new(
+            &context.entity_update_mutation.filter_field,
+            TypeRef::named(FilterInputBuilder::type_name(context, &object_name)),
+        );
 
         Field::new(
-            self.type_name::<T>(),
-            TypeRef::named_nn_list_nn(entity_object_builder.basic_type_name::<T>()),
+            Self::type_name::<T>(context),
+            TypeRef::named_nn_list_nn(EntityObjectBuilder::basic_type_name::<T>(context)),
             move |ctx| {
-                FieldFuture::new(async move {
-                    let guard_flag = if let Some(guard) = guard {
-                        (*guard)(&ctx)
-                    } else {
-                        GuardAction::Allow
-                    };
+                let mutation_fn = mutation_fn.clone();
+                let guard_flag = if let Some(guard) = guard {
+                    (*guard)(&ctx)
+                } else {
+                    GuardAction::Allow
+                };
 
+                FieldFuture::new(async move {
                     if let GuardAction::Block(reason) = guard_flag {
                         return match reason {
                             Some(reason) => Err::<Option<_>, async_graphql::Error>(
@@ -106,25 +115,20 @@ impl EntityUpdateMutationBuilder {
                         };
                     }
 
-                    let db = ctx.data::<DatabaseConnection>()?;
-                    let transaction = db.begin().await?;
-
-                    let entity_input_builder = EntityInputBuilder { context };
-                    let entity_object_builder = EntityObjectBuilder { context };
-
                     let filters = ctx.args.get(&context.entity_update_mutation.filter_field);
-                    let filter_condition = get_filter_conditions::<T>(&ctx, context, filters);
 
                     let value_accessor = ctx
                         .args
                         .get(&context.entity_update_mutation.data_field)
                         .unwrap();
-                    let input_object = &value_accessor.object()?;
+                    let input_object = value_accessor.object()?;
+
+                    let field_guards = &context.guards.field_guards;
 
                     for (column, _) in input_object.iter() {
                         let field_guard = field_guards.get(&format!(
                             "{}.{}",
-                            entity_object_builder.type_name::<T>(),
+                            EntityObjectBuilder::type_name::<T>(context),
                             column
                         ));
                         let field_guard_flag = if let Some(field_guard) = field_guard {
@@ -144,23 +148,7 @@ impl EntityUpdateMutationBuilder {
                         }
                     }
 
-                    let active_model = prepare_active_model::<T, A>(
-                        &entity_input_builder,
-                        &entity_object_builder,
-                        input_object,
-                        &ctx,
-                    )?;
-
-                    T::update_many()
-                        .set(active_model)
-                        .filter(filter_condition.clone())
-                        .exec(&transaction)
-                        .await?;
-
-                    let result: Vec<T::Model> =
-                        T::find().filter(filter_condition).all(&transaction).await?;
-
-                    transaction.commit().await?;
+                    let result = mutation_fn(&ctx, filters, input_object).await?;
 
                     Ok(Some(FieldValue::list(
                         result.into_iter().map(FieldValue::owned_any),
@@ -168,13 +156,73 @@ impl EntityUpdateMutationBuilder {
                 })
             },
         )
-        .argument(InputValue::new(
-            &context.entity_update_mutation.data_field,
-            TypeRef::named_nn(entity_input_builder.update_type_name::<T>()),
-        ))
-        .argument(InputValue::new(
-            &context.entity_update_mutation.filter_field,
-            TypeRef::named(entity_filter_input_builder.type_name(&object_name)),
-        ))
+        .argument(data_input_value)
+        .argument(filter_input_value)
+    }
+
+    pub fn default_mutation_fn<T, A>(&self, active_model_hooks: bool) -> UpdateMutationFn<T::Model>
+    where
+        T: EntityTrait,
+        <T as EntityTrait>::Model: Sync,
+        <T as EntityTrait>::Model: IntoActiveModel<A>,
+        A: ActiveModelTrait<Entity = T>
+            + sea_orm::ActiveModelBehavior
+            + std::marker::Send
+            + 'static,
+    {
+        let context = self.context;
+        Arc::new(move |resolve_context, filters, input_object| {
+            let active_model =
+                prepare_active_model::<T, A>(context, &input_object, resolve_context);
+            let db = resolve_context.data::<DatabaseConnection>().cloned();
+            let filter_condition = get_filter_conditions::<T>(resolve_context, context, filters);
+
+            Box::pin(async move {
+                let db = db?;
+                let active_model = active_model?;
+                if active_model_hooks {
+                    let transaction = db.begin().await?;
+
+                    let active_model = active_model.before_save(&transaction, false).await?;
+
+                    let models = T::update_many()
+                        .set(active_model)
+                        .filter(filter_condition.clone())
+                        .exec_with_returning(&transaction)
+                        .await?;
+                    let mut result = vec![];
+
+                    for model in models {
+                        result.push(A::after_save(model, &transaction, false).await?);
+                    }
+
+                    transaction.commit().await?;
+
+                    Ok(result)
+                } else {
+                    let result = T::update_many()
+                        .set(active_model)
+                        .filter(filter_condition)
+                        .exec_with_returning(&db)
+                        .await?;
+
+                    Ok(result)
+                }
+            })
+        })
+    }
+
+    /// used to get the update mutation field for a SeaORM entity
+    pub fn to_field<T, A>(&self, active_model_hooks: bool) -> Field
+    where
+        T: EntityTrait,
+        <T as EntityTrait>::Model: Sync,
+        <T as EntityTrait>::Model: IntoActiveModel<A>,
+        A: ActiveModelTrait<Entity = T>
+            + sea_orm::ActiveModelBehavior
+            + std::marker::Send
+            + 'static,
+    {
+        self.to_field_with_mutation_fn::<T>(self.default_mutation_fn::<T, A>(active_model_hooks))
     }
 }
