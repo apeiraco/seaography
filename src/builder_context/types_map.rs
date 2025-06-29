@@ -18,6 +18,10 @@ pub type FnOutputTypeConversion =
 pub struct TypesMapConfig {
     /// used to map entity_name.column_name to a custom Type
     pub overwrites: BTreeMap<String, ConvertedType>,
+    /// used to map entity_name.column_name entity input to a custom TypeRef
+    pub input_type_overwrites: BTreeMap<String, TypeRef>,
+    /// used to map entity_name.column_name entity output to a custom TypeRef
+    pub output_type_overwrites: BTreeMap<String, TypeRef>,
     /// used to map entity_name.column_name input to a custom parser
     pub input_conversions: BTreeMap<String, FnInputTypeConversion>,
     /// used to map entity_name.column_name input to a custom parser
@@ -38,6 +42,8 @@ impl std::default::Default for TypesMapConfig {
     fn default() -> Self {
         Self {
             overwrites: BTreeMap::new(),
+            input_type_overwrites: BTreeMap::new(),
+            output_type_overwrites: BTreeMap::new(),
             input_conversions: BTreeMap::new(),
             input_none_conversions: BTreeMap::new(),
             output_conversions: BTreeMap::new(),
@@ -243,7 +249,7 @@ impl TypesMapHelper {
 
     /// used to map from a SeaORM column type to an async_graphql type
     /// None indicates that we do not support the type
-    pub fn sea_orm_column_type_to_graphql_type(
+    fn sea_orm_column_type_to_graphql_type(
         context: &BuilderContext,
         ty: &ColumnType,
         not_null: bool,
@@ -355,6 +361,76 @@ impl TypesMapHelper {
                 ty
             }
         })
+    }
+
+    pub fn get_column_input_type<T>(
+        context: &BuilderContext,
+        column: &T::Column,
+        not_null: bool,
+    ) -> Option<TypeRef>
+    where
+        T: EntityTrait,
+        <T as EntityTrait>::Model: Sync,
+    {
+        let entity_name = EntityObjectBuilder::type_name::<T>(context);
+        let column_name = EntityObjectBuilder::column_name::<T>(context, column);
+
+        if let Some(ty) = context
+            .types
+            .input_type_overwrites
+            .get(&format!("{entity_name}.{column_name}"))
+        {
+            if not_null {
+                return Some(TypeRef::NonNull(Box::new(ty.clone())));
+            } else {
+                return Some(ty.clone());
+            }
+        }
+
+        let column_def = column.def();
+        let enum_type_name = column.enum_type_name();
+
+        TypesMapHelper::sea_orm_column_type_to_graphql_type(
+            context,
+            column_def.get_column_type(),
+            not_null,
+            enum_type_name,
+        )
+    }
+
+    pub fn get_column_output_type<T>(
+        context: &BuilderContext,
+        column: &T::Column,
+        not_null: bool,
+    ) -> Option<TypeRef>
+    where
+        T: EntityTrait,
+        <T as EntityTrait>::Model: Sync,
+    {
+        let entity_name = EntityObjectBuilder::type_name::<T>(context);
+        let column_name = EntityObjectBuilder::column_name::<T>(context, column);
+
+        if let Some(ty) = context
+            .types
+            .output_type_overwrites
+            .get(&format!("{entity_name}.{column_name}"))
+        {
+            if not_null {
+                return Some(TypeRef::NonNull(Box::new(ty.clone())));
+            } else {
+                return Some(ty.clone());
+            }
+        }
+
+        let column_def = column.def();
+        let enum_type_name = column.enum_type_name();
+
+        TypesMapHelper::sea_orm_column_type_to_graphql_type(
+            context,
+            column_def.get_column_type(),
+            not_null,
+            enum_type_name,
+        )
     }
 }
 

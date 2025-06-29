@@ -109,13 +109,11 @@ impl EntityObjectBuilder {
             let column_name = Self::column_name::<T>(context, &column);
 
             let column_def = column.def();
-            let enum_type_name = column.enum_type_name();
 
-            let graphql_type = match TypesMapHelper::sea_orm_column_type_to_graphql_type(
+            let graphql_type = match TypesMapHelper::get_column_output_type::<T>(
                 context,
-                column_def.get_column_type(),
+                &column,
                 !column_def.is_null(),
-                enum_type_name,
             ) {
                 Some(type_name) => type_name,
                 None => return object,

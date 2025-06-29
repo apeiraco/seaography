@@ -84,7 +84,6 @@ impl EntityInputBuilder {
             }
 
             let column_def = column.def();
-            let enum_type_name = column.enum_type_name();
 
             let auto_increment = match <T::PrimaryKey as PrimaryKeyToColumn>::from_column(column) {
                 Some(_) => T::PrimaryKey::auto_increment(),
@@ -102,11 +101,10 @@ impl EntityInputBuilder {
                     || has_default_expr
                     || has_none_conversion);
 
-            let graphql_type = match TypesMapHelper::sea_orm_column_type_to_graphql_type(
+            let graphql_type = match TypesMapHelper::get_column_input_type::<T>(
                 context,
-                column_def.get_column_type(),
+                &column,
                 is_insert_not_nullable,
-                enum_type_name,
             ) {
                 Some(type_name) => type_name,
                 None => return object,
