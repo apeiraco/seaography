@@ -16,9 +16,9 @@ use crate::{
 
 pub type UpdateMutationFn<M> = Arc<
     dyn for<'a> Fn(
-            &ResolverContext<'a>,
-            Option<ValueAccessor<'_>>,
-            ObjectAccessor<'_>,
+            &'a ResolverContext<'a>,
+            Option<ValueAccessor<'a>>,
+            ObjectAccessor<'a>,
         ) -> Pin<
             Box<dyn Future<Output = Result<Vec<M>, async_graphql::Error>> + Send + 'a>,
         > + Send
@@ -82,28 +82,21 @@ impl EntityUpdateMutationBuilder {
 
         let guard = context.guards.entity_guards.get(&object_name);
 
-        let data_input_value = InputValue::new(
-            &context.entity_update_mutation.data_field,
-            TypeRef::named_nn(EntityInputBuilder::update_type_name::<T>(context)),
-        );
-
-        let filter_input_value = InputValue::new(
-            &context.entity_update_mutation.filter_field,
-            TypeRef::named(FilterInputBuilder::type_name(context, &object_name)),
-        );
+        let field_guards = &context.guards.field_guards;
 
         Field::new(
             Self::type_name::<T>(context),
             TypeRef::named_nn_list_nn(EntityObjectBuilder::basic_type_name::<T>(context)),
             move |ctx| {
                 let mutation_fn = mutation_fn.clone();
-                let guard_flag = if let Some(guard) = guard {
-                    (*guard)(&ctx)
-                } else {
-                    GuardAction::Allow
-                };
 
                 FieldFuture::new(async move {
+                    let guard_flag = if let Some(guard) = guard {
+                        (*guard)(&ctx)
+                    } else {
+                        GuardAction::Allow
+                    };
+
                     if let GuardAction::Block(reason) = guard_flag {
                         return match reason {
                             Some(reason) => Err::<Option<_>, async_graphql::Error>(
@@ -122,8 +115,6 @@ impl EntityUpdateMutationBuilder {
                         .get(&context.entity_update_mutation.data_field)
                         .unwrap();
                     let input_object = value_accessor.object()?;
-
-                    let field_guards = &context.guards.field_guards;
 
                     for (column, _) in input_object.iter() {
                         let field_guard = field_guards.get(&format!(
@@ -156,8 +147,14 @@ impl EntityUpdateMutationBuilder {
                 })
             },
         )
-        .argument(data_input_value)
-        .argument(filter_input_value)
+        .argument(InputValue::new(
+            &context.entity_update_mutation.data_field,
+            TypeRef::named_nn(EntityInputBuilder::update_type_name::<T>(context)),
+        ))
+        .argument(InputValue::new(
+            &context.entity_update_mutation.filter_field,
+            TypeRef::named(FilterInputBuilder::type_name(context, &object_name)),
+        ))
     }
 
     pub fn default_mutation_fn<T, A>(&self, active_model_hooks: bool) -> UpdateMutationFn<T::Model>
@@ -165,21 +162,16 @@ impl EntityUpdateMutationBuilder {
         T: EntityTrait,
         <T as EntityTrait>::Model: Sync,
         <T as EntityTrait>::Model: IntoActiveModel<A>,
-        A: ActiveModelTrait<Entity = T>
-            + sea_orm::ActiveModelBehavior
-            + std::marker::Send
-            + 'static,
+        A: ActiveModelTrait<Entity = T> + sea_orm::ActiveModelBehavior + std::marker::Send,
     {
         let context = self.context;
         Arc::new(move |resolve_context, filters, input_object| {
-            let active_model =
-                prepare_active_model::<T, A>(context, &input_object, resolve_context);
-            let db = resolve_context.data::<DatabaseConnection>().cloned();
-            let filter_condition = get_filter_conditions::<T>(resolve_context, context, filters);
-
             Box::pin(async move {
-                let db = db?;
-                let active_model = active_model?;
+                let active_model =
+                    prepare_active_model::<T, A>(context, &input_object, resolve_context)?;
+                let db = resolve_context.data::<DatabaseConnection>()?;
+                let filter_condition =
+                    get_filter_conditions::<T>(resolve_context, context, filters);
                 if active_model_hooks {
                     let transaction = db.begin().await?;
 
@@ -203,7 +195,7 @@ impl EntityUpdateMutationBuilder {
                     let result = T::update_many()
                         .set(active_model)
                         .filter(filter_condition)
-                        .exec_with_returning(&db)
+                        .exec_with_returning(db)
                         .await?;
 
                     Ok(result)
@@ -218,10 +210,7 @@ impl EntityUpdateMutationBuilder {
         T: EntityTrait,
         <T as EntityTrait>::Model: Sync,
         <T as EntityTrait>::Model: IntoActiveModel<A>,
-        A: ActiveModelTrait<Entity = T>
-            + sea_orm::ActiveModelBehavior
-            + std::marker::Send
-            + 'static,
+        A: ActiveModelTrait<Entity = T> + sea_orm::ActiveModelBehavior + std::marker::Send,
     {
         self.to_field_with_mutation_fn::<T>(self.default_mutation_fn::<T, A>(active_model_hooks))
     }

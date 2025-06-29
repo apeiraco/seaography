@@ -14,8 +14,8 @@ use crate::{
 
 pub type CreateBatchMutationFn<M> = Arc<
     dyn for<'a> Fn(
-            &ResolverContext<'a>,
-            Vec<ObjectAccessor<'_>>,
+            &'a ResolverContext<'a>,
+            Vec<ObjectAccessor<'a>>,
         ) -> Pin<
             Box<dyn Future<Output = Result<Vec<M>, async_graphql::Error>> + Send + 'a>,
         > + Send
@@ -73,30 +73,30 @@ impl EntityCreateBatchMutationBuilder {
         T: EntityTrait,
         <T as EntityTrait>::Model: Sync,
         <T as EntityTrait>::Model: IntoActiveModel<A>,
-        A: ActiveModelTrait<Entity = T>
-            + sea_orm::ActiveModelBehavior
-            + std::marker::Send
-            + 'static,
+        A: ActiveModelTrait<Entity = T> + sea_orm::ActiveModelBehavior + std::marker::Send,
     {
         let builder_context = self.context;
         Arc::new(move |resolve_context, input_objects| {
-            let active_models = input_objects
-                .into_iter()
-                .map(|input_object| {
-                    prepare_active_model::<T, A>(builder_context, &input_object, resolve_context)
-                })
-                .collect::<Result<Vec<_>, _>>();
-
-            let db = resolve_context.data::<DatabaseConnection>().cloned();
-
             Box::pin(async move {
-                let db = db?;
+                let active_models = input_objects
+                    .into_iter()
+                    .map(|input_object| {
+                        prepare_active_model::<T, A>(
+                            builder_context,
+                            &input_object,
+                            resolve_context,
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                let db = resolve_context.data::<DatabaseConnection>()?;
+
                 if active_model_hooks {
                     let transaction = db.begin().await?;
 
                     let mut before_save_models = vec![];
 
-                    for active_model in active_models? {
+                    for active_model in active_models {
                         let before_save_model =
                             active_model.before_save(&transaction, false).await?;
                         before_save_models.push(before_save_model);
@@ -116,9 +116,8 @@ impl EntityCreateBatchMutationBuilder {
 
                     Ok(result)
                 } else {
-                    let active_models = active_models?;
                     let results: Vec<T::Model> = T::insert_many(active_models)
-                        .exec_with_returning_many(&db)
+                        .exec_with_returning_many(db)
                         .await?;
 
                     Ok(results)
@@ -138,25 +137,23 @@ impl EntityCreateBatchMutationBuilder {
         let context = self.context;
         let object_name: String = EntityObjectBuilder::type_name::<T>(context);
 
-        let data_input_value = InputValue::new(
-            &context.entity_create_batch_mutation.data_field,
-            TypeRef::named_nn_list_nn(EntityInputBuilder::insert_type_name::<T>(context)),
-        );
-
         let guard = context.guards.entity_guards.get(&object_name);
+
+        let field_guards = &context.guards.field_guards;
 
         Field::new(
             Self::type_name::<T>(context),
             TypeRef::named_nn_list_nn(EntityObjectBuilder::basic_type_name::<T>(context)),
             move |resolve_ctx| {
                 let mutation_fn = mutation_fn.clone();
-                let guard_flag = if let Some(guard) = guard {
-                    (*guard)(&resolve_ctx)
-                } else {
-                    GuardAction::Allow
-                };
 
                 FieldFuture::new(async move {
+                    let guard_flag = if let Some(guard) = guard {
+                        (*guard)(&resolve_ctx)
+                    } else {
+                        GuardAction::Allow
+                    };
+
                     if let GuardAction::Block(reason) = guard_flag {
                         return match reason {
                             Some(reason) => Err::<Option<_>, async_graphql::Error>(
@@ -167,8 +164,6 @@ impl EntityCreateBatchMutationBuilder {
                             ),
                         };
                     }
-
-                    let field_guards = &context.guards.field_guards;
 
                     let mut input_objects = vec![];
                     let list = resolve_ctx
@@ -212,7 +207,10 @@ impl EntityCreateBatchMutationBuilder {
                 })
             },
         )
-        .argument(data_input_value)
+        .argument(InputValue::new(
+            &context.entity_create_batch_mutation.data_field,
+            TypeRef::named_nn_list_nn(EntityInputBuilder::insert_type_name::<T>(context)),
+        ))
     }
 
     /// used to get the create mutation field for a SeaORM entity
@@ -221,10 +219,7 @@ impl EntityCreateBatchMutationBuilder {
         T: EntityTrait,
         <T as EntityTrait>::Model: Sync,
         <T as EntityTrait>::Model: IntoActiveModel<A>,
-        A: ActiveModelTrait<Entity = T>
-            + sea_orm::ActiveModelBehavior
-            + std::marker::Send
-            + 'static,
+        A: ActiveModelTrait<Entity = T> + sea_orm::ActiveModelBehavior + std::marker::Send,
     {
         self.to_field_with_mutation_fn::<T>(self.default_mutation_fn::<T, A>(active_model_hooks))
     }

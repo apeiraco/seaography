@@ -15,7 +15,7 @@ use crate::{
 pub type CreateOneMutationFn<M> = Arc<
     dyn for<'a> Fn(
             &'a ResolverContext<'a>,
-            ObjectAccessor<'_>,
+            ObjectAccessor<'a>,
         )
             -> Pin<Box<dyn Future<Output = Result<M, async_graphql::Error>> + Send + 'a>>
         + Send
@@ -74,19 +74,21 @@ impl EntityCreateOneMutationBuilder {
         let object_name: String = EntityObjectBuilder::type_name::<T>(context);
 
         let guard = context.guards.entity_guards.get(&object_name);
+        let field_guards = &context.guards.field_guards;
 
         Field::new(
             Self::type_name::<T>(context),
             TypeRef::named_nn(EntityObjectBuilder::basic_type_name::<T>(context)),
             move |resolver_context| {
                 let mutation_fn = mutation_fn.clone();
-                let guard_flag = if let Some(guard) = guard {
-                    (*guard)(&resolver_context)
-                } else {
-                    GuardAction::Allow
-                };
 
                 FieldFuture::new(async move {
+                    let guard_flag = if let Some(guard) = guard {
+                        (*guard)(&resolver_context)
+                    } else {
+                        GuardAction::Allow
+                    };
+
                     if let GuardAction::Block(reason) = guard_flag {
                         return match reason {
                             Some(reason) => Err::<Option<_>, async_graphql::Error>(
@@ -103,8 +105,6 @@ impl EntityCreateOneMutationBuilder {
                         .get(&context.entity_create_one_mutation.data_field)
                         .unwrap();
                     let input_object = value_accessor.object()?;
-
-                    let field_guards = &context.guards.field_guards;
 
                     for (column, _) in input_object.iter() {
                         let field_guard = field_guards.get(&format!(
@@ -149,20 +149,14 @@ impl EntityCreateOneMutationBuilder {
         T: EntityTrait,
         <T as EntityTrait>::Model: Sync,
         <T as EntityTrait>::Model: IntoActiveModel<A>,
-        A: ActiveModelTrait<Entity = T>
-            + sea_orm::ActiveModelBehavior
-            + std::marker::Send
-            + 'static,
+        A: ActiveModelTrait<Entity = T> + sea_orm::ActiveModelBehavior + std::marker::Send,
     {
         let context = self.context;
         Arc::new(move |resolve_context, input_object| {
-            let active_model_result =
-                prepare_active_model::<T, A>(context, &input_object, resolve_context);
-            let db = resolve_context.data::<DatabaseConnection>().cloned();
-
             Box::pin(async move {
-                let active_model = active_model_result?;
-                let db = db?;
+                let active_model =
+                    prepare_active_model::<T, A>(context, &input_object, resolve_context)?;
+                let db = resolve_context.data::<DatabaseConnection>()?;
 
                 if active_model_hooks {
                     let transaction = db.begin().await?;
@@ -177,7 +171,7 @@ impl EntityCreateOneMutationBuilder {
 
                     Ok(result)
                 } else {
-                    let result: T::Model = active_model.insert(&db).await?;
+                    let result: T::Model = active_model.insert(db).await?;
 
                     Ok(result)
                 }
@@ -191,10 +185,7 @@ impl EntityCreateOneMutationBuilder {
         T: EntityTrait,
         <T as EntityTrait>::Model: Sync,
         <T as EntityTrait>::Model: IntoActiveModel<A>,
-        A: ActiveModelTrait<Entity = T>
-            + sea_orm::ActiveModelBehavior
-            + std::marker::Send
-            + 'static,
+        A: ActiveModelTrait<Entity = T> + sea_orm::ActiveModelBehavior + std::marker::Send,
     {
         self.to_field_with_mutation_fn::<T>(self.default_mutation_fn::<T, A>(active_model_hooks))
     }

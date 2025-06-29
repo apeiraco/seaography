@@ -15,8 +15,8 @@ use crate::{
 
 pub type DeleteMutationFn = Arc<
     dyn for<'a> Fn(
-            &ResolverContext<'a>,
-            Option<ValueAccessor<'_>>,
+            &'a ResolverContext<'a>,
+            Option<ValueAccessor<'a>>,
         )
             -> Pin<Box<dyn Future<Output = Result<u64, async_graphql::Error>> + Send + 'a>>
         + Send
@@ -82,13 +82,14 @@ impl EntityDeleteMutationBuilder {
             TypeRef::named_nn(TypeRef::INT),
             move |resolve_context| {
                 let mutation_fn = mutation_fn.clone();
-                let guard_flag = if let Some(guard) = guard {
-                    (*guard)(&resolve_context)
-                } else {
-                    GuardAction::Allow
-                };
 
                 FieldFuture::new(async move {
+                    let guard_flag = if let Some(guard) = guard {
+                        (*guard)(&resolve_context)
+                    } else {
+                        GuardAction::Allow
+                    };
+
                     if let GuardAction::Block(reason) = guard_flag {
                         return Err::<Option<_>, async_graphql::Error>(async_graphql::Error::new(
                             reason.unwrap_or("Entity guard triggered.".into()),
@@ -116,19 +117,16 @@ impl EntityDeleteMutationBuilder {
         T: EntityTrait,
         <T as EntityTrait>::Model: Sync,
         <T as EntityTrait>::Model: IntoActiveModel<A>,
-        A: ActiveModelTrait<Entity = T>
-            + sea_orm::ActiveModelBehavior
-            + std::marker::Send
-            + 'static,
+        A: ActiveModelTrait<Entity = T> + sea_orm::ActiveModelBehavior + std::marker::Send,
     {
         let context = self.context;
         Arc::new(move |resolve_context, filters| {
-            let db = resolve_context.data::<DatabaseConnection>().cloned();
-
-            let filters_condition = get_filter_conditions::<T>(resolve_context, context, filters);
-
             Box::pin(async move {
-                let db = db?;
+                let db = resolve_context.data::<DatabaseConnection>()?;
+
+                let filters_condition =
+                    get_filter_conditions::<T>(resolve_context, context, filters);
+
                 if active_model_hooks {
                     let transaction = db.begin().await?;
 
@@ -156,7 +154,7 @@ impl EntityDeleteMutationBuilder {
 
                     Ok(result.rows_affected)
                 } else {
-                    let result = T::delete_many().filter(filters_condition).exec(&db).await?;
+                    let result = T::delete_many().filter(filters_condition).exec(db).await?;
 
                     Ok(result.rows_affected)
                 }
@@ -170,10 +168,7 @@ impl EntityDeleteMutationBuilder {
         T: EntityTrait,
         <T as EntityTrait>::Model: Sync,
         <T as EntityTrait>::Model: IntoActiveModel<A>,
-        A: ActiveModelTrait<Entity = T>
-            + sea_orm::ActiveModelBehavior
-            + std::marker::Send
-            + 'static,
+        A: ActiveModelTrait<Entity = T> + sea_orm::ActiveModelBehavior + std::marker::Send,
     {
         self.to_field_with_mutation_fn::<T>(self.default_mutation_fn::<T, A>(active_model_hooks))
     }
