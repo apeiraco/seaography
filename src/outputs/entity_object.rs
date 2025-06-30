@@ -255,11 +255,7 @@ fn sea_query_value_to_graphql_value(
         #[cfg(feature = "with-chrono")]
         #[cfg_attr(docsrs, doc(cfg(feature = "with-chrono")))]
         sea_orm::sea_query::Value::ChronoDateTimeUtc(value) => {
-            if cfg!(feature = "with-chrono-datetime-utc-as-timestamp") {
-                value.map(|it| Value::from(it.timestamp_millis()))
-            } else {
-                value.map(|it| Value::from(it.to_string()))
-            }
+            value.map(|it| Value::from(it.to_string()))
         }
 
         #[cfg(feature = "with-chrono")]

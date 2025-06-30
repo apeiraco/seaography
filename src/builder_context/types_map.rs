@@ -554,16 +554,8 @@ pub fn converted_type_to_sea_orm_array_type(
         ConvertedType::ChronoTime => Ok(sea_orm::sea_query::value::ArrayType::String),
         #[cfg(feature = "with-chrono")]
         ConvertedType::ChronoDateTime => Ok(sea_orm::sea_query::value::ArrayType::String),
-        #[cfg(all(
-            feature = "with-chrono",
-            not(feature = "with-chrono-datetime-utc-as-timestamp")
-        ))]
+        #[cfg(feature = "with-chrono")]
         ConvertedType::ChronoDateTimeUtc => Ok(sea_orm::sea_query::value::ArrayType::String),
-        #[cfg(all(
-            feature = "with-chrono",
-            feature = "with-chrono-datetime-utc-as-timestamp"
-        ))]
-        ConvertedType::ChronoDateTimeUtc => Ok(sea_orm::sea_query::value::ArrayType::BigInt),
         #[cfg(feature = "with-chrono")]
         ConvertedType::ChronoDateTimeLocal => Ok(sea_orm::sea_query::value::ArrayType::String),
         #[cfg(feature = "with-chrono")]
@@ -763,7 +755,6 @@ pub fn converted_value_to_sea_orm_value(
         ConvertedType::ChronoDateTimeUtc if is_null => sea_orm::Value::ChronoDateTimeUtc(None),
         #[cfg(feature = "with-chrono")]
         ConvertedType::ChronoDateTimeUtc => {
-            #[cfg(not(feature = "with-chrono-datetime-utc-as-timestamp"))]
             let value = {
                 use std::str::FromStr;
                 sea_orm::entity::prelude::ChronoDateTimeUtc::from_str(value.string()?).map_err(
@@ -775,16 +766,6 @@ pub fn converted_value_to_sea_orm_value(
                     },
                 )?
             };
-
-            #[cfg(feature = "with-chrono-datetime-utc-as-timestamp")]
-            let value =
-                sea_orm::entity::prelude::ChronoDateTimeUtc::from_timestamp_millis(value.i64()?)
-                    .ok_or_else(|| {
-                        crate::SeaographyError::TypeConversionError(
-                            "Invalid timestamp".to_string(),
-                            format!("ChronoDateTimeUtc - {entity_name}.{column_name}"),
-                        )
-                    })?;
 
             sea_orm::Value::ChronoDateTimeUtc(Some(Box::new(value)))
         }
