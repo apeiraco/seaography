@@ -38,26 +38,31 @@ impl std::default::Default for EdgeObjectConfig {
 }
 
 /// This builder produces the Node object for a SeaORM entity
-pub struct EdgeObjectBuilder {}
+pub struct EdgeObjectBuilder {
+    pub context: &'static BuilderContext,
+}
 
 impl EdgeObjectBuilder {
     /// used to get type name
-    pub fn type_name(context: &BuilderContext, object_name: &str) -> String {
-        context.edge_object.type_name.as_ref()(object_name)
+    pub fn type_name(&self, object_name: &str) -> String {
+        self.context.edge_object.type_name.as_ref()(object_name)
     }
 
     /// used to get the Node object for a SeaORM entity
-    pub fn to_object<T>(context: &BuilderContext) -> Object
+    pub fn to_object<T>(&self) -> Object
     where
         T: EntityTrait,
         <T as EntityTrait>::Model: Sync,
     {
-        let object_name = EntityObjectBuilder::type_name::<T>(context);
-        let name = context.edge_object.type_name.as_ref()(object_name.as_str());
+        let entity_object_builder = EntityObjectBuilder {
+            context: self.context,
+        };
+        let object_name = entity_object_builder.type_name::<T>();
+        let name = self.type_name(&object_name);
 
         Object::new(name)
             .field(Field::new(
-                &context.edge_object.cursor,
+                &self.context.edge_object.cursor,
                 TypeRef::named_nn(TypeRef::STRING),
                 |ctx| {
                     FieldFuture::new(async move {
@@ -67,7 +72,7 @@ impl EdgeObjectBuilder {
                 },
             ))
             .field(Field::new(
-                &context.edge_object.node,
+                &self.context.edge_object.node,
                 TypeRef::named_nn(object_name),
                 |ctx| {
                     FieldFuture::new(async move {

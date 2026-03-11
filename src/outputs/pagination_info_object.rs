@@ -41,19 +41,21 @@ impl std::default::Default for PaginationInfoObjectConfig {
 /// This builder produces the PaginationInfo object
 /// that contains page/offset pagination information
 /// for a query
-pub struct PaginationInfoObjectBuilder {}
+pub struct PaginationInfoObjectBuilder {
+    pub context: &'static BuilderContext,
+}
 
 impl PaginationInfoObjectBuilder {
     /// used to get type name
-    pub fn type_name(context: &BuilderContext) -> String {
-        context.pagination_info_object.type_name.clone()
+    pub fn type_name(&self) -> String {
+        self.context.pagination_info_object.type_name.clone()
     }
 
     /// used to get GraphQL object for PaginationInfo
-    pub fn to_object(context: &BuilderContext) -> Object {
-        Object::new(&context.pagination_info_object.type_name)
+    pub fn to_object(&self) -> Object {
+        Object::new(&self.context.pagination_info_object.type_name)
             .field(Field::new(
-                &context.pagination_info_object.pages,
+                &self.context.pagination_info_object.pages,
                 TypeRef::named_nn(TypeRef::INT),
                 |ctx| {
                     FieldFuture::new(async move {
@@ -64,7 +66,7 @@ impl PaginationInfoObjectBuilder {
                 },
             ))
             .field(Field::new(
-                &context.pagination_info_object.current,
+                &self.context.pagination_info_object.current,
                 TypeRef::named_nn(TypeRef::INT),
                 |ctx| {
                     FieldFuture::new(async move {
@@ -75,7 +77,7 @@ impl PaginationInfoObjectBuilder {
                 },
             ))
             .field(Field::new(
-                &context.pagination_info_object.offset,
+                &self.context.pagination_info_object.offset,
                 TypeRef::named_nn(TypeRef::INT),
                 |ctx| {
                     FieldFuture::new(async move {
@@ -86,7 +88,7 @@ impl PaginationInfoObjectBuilder {
                 },
             ))
             .field(Field::new(
-                &context.pagination_info_object.total,
+                &self.context.pagination_info_object.total,
                 TypeRef::named_nn(TypeRef::INT),
                 |ctx| {
                     FieldFuture::new(async move {

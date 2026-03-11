@@ -1,8 +1,6 @@
-use std::borrow::Cow;
-
 use async_graphql::dynamic::{InputObject, InputValue, ObjectAccessor, TypeRef};
 
-use crate::BuilderContext;
+use crate::{BuilderContext, SeaResult};
 
 /// used to hold information about offset pagination
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -32,40 +30,37 @@ impl std::default::Default for OffsetInputConfig {
 }
 
 /// This builder produces the offset pagination options input object
-pub struct OffsetInputBuilder {}
+pub struct OffsetInputBuilder {
+    pub context: &'static BuilderContext,
+}
 
 impl OffsetInputBuilder {
     /// used to get type name
-    pub fn type_name<'a>(context: &'a BuilderContext) -> Cow<'a, str> {
-        Cow::Borrowed(&context.offset_input.type_name)
+    pub fn type_name(&self) -> String {
+        self.context.offset_input.type_name.clone()
     }
 
     /// used to get offset pagination options object
-    pub fn input_object(context: &BuilderContext) -> InputObject {
-        InputObject::new(&context.offset_input.type_name)
+    pub fn input_object(&self) -> InputObject {
+        InputObject::new(&self.context.offset_input.type_name)
             .field(InputValue::new(
-                &context.offset_input.limit,
+                &self.context.offset_input.limit,
                 TypeRef::named_nn(TypeRef::INT),
             ))
             .field(InputValue::new(
-                &context.offset_input.offset,
+                &self.context.offset_input.offset,
                 TypeRef::named_nn(TypeRef::INT),
             ))
     }
 
     /// used to parse query input to offset pagination options struct
-    pub fn parse_object(context: &BuilderContext, object: &ObjectAccessor) -> OffsetInput {
+    pub fn parse_object(&self, object: &ObjectAccessor) -> SeaResult<OffsetInput> {
         let offset = object
-            .get(&context.offset_input.offset)
-            .map_or_else(|| Ok(0), |v| v.u64())
-            .unwrap();
+            .get(&self.context.offset_input.offset)
+            .map_or(Ok(0), |v| v.u64())?;
 
-        let limit = object
-            .get(&context.offset_input.limit)
-            .unwrap()
-            .u64()
-            .unwrap();
+        let limit = object.try_get(&self.context.offset_input.limit)?.u64()?;
 
-        OffsetInput { offset, limit }
+        Ok(OffsetInput { offset, limit })
     }
 }

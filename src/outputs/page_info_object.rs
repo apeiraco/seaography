@@ -69,19 +69,21 @@ impl std::default::Default for PageInfoObjectConfig {
 /// This builder produces the PageInfo object
 /// that contains cursor pagination information
 /// for a query
-pub struct PageInfoObjectBuilder {}
+pub struct PageInfoObjectBuilder {
+    pub context: &'static BuilderContext,
+}
 
 impl PageInfoObjectBuilder {
     /// used to get type name
-    pub fn type_name(context: &BuilderContext) -> String {
-        context.page_info_object.type_name.clone()
+    pub fn type_name(&self) -> String {
+        self.context.page_info_object.type_name.clone()
     }
 
     /// used to get GraphQL object for PageInfo
-    pub fn to_object(context: &BuilderContext) -> Object {
-        Object::new(&context.page_info_object.type_name)
+    pub fn to_object(&self) -> Object {
+        Object::new(&self.context.page_info_object.type_name)
             .field(Field::new(
-                &context.page_info_object.has_previous_page,
+                &self.context.page_info_object.has_previous_page,
                 TypeRef::named_nn(TypeRef::BOOLEAN),
                 |ctx| {
                     FieldFuture::new(async move {
@@ -91,7 +93,7 @@ impl PageInfoObjectBuilder {
                 },
             ))
             .field(Field::new(
-                &context.page_info_object.has_next_page,
+                &self.context.page_info_object.has_next_page,
                 TypeRef::named_nn(TypeRef::BOOLEAN),
                 |ctx| {
                     FieldFuture::new(async move {
@@ -101,7 +103,7 @@ impl PageInfoObjectBuilder {
                 },
             ))
             .field(Field::new(
-                &context.page_info_object.start_cursor,
+                &self.context.page_info_object.start_cursor,
                 TypeRef::named(TypeRef::STRING),
                 |ctx| {
                     FieldFuture::new(async move {
@@ -116,7 +118,7 @@ impl PageInfoObjectBuilder {
                 },
             ))
             .field(Field::new(
-                &context.page_info_object.end_cursor,
+                &self.context.page_info_object.end_cursor,
                 TypeRef::named(TypeRef::STRING),
                 |ctx| {
                     FieldFuture::new(async move {

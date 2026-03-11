@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 
-use async_graphql::dynamic::{InputObject, InputValue, ObjectAccessor, ResolverContext};
+use async_graphql::dynamic::{InputObject, InputValue, ObjectAccessor};
 use sea_orm::{ColumnTrait, EntityTrait, Iterable, PrimaryKeyToColumn, PrimaryKeyTrait};
 
-use crate::{BuilderContext, EntityObjectBuilder, SeaResult, TypesMapHelper};
+use crate::{BuilderContext, EntityColumnId, EntityObjectBuilder, SeaResult, TypesMapHelper};
 
 /// The configuration structure of EntityInputBuilder
 pub struct EntityInputConfig {
@@ -29,54 +29,64 @@ impl std::default::Default for EntityInputConfig {
 }
 
 /// Used to create the entity create/update input object
-pub struct EntityInputBuilder {}
+pub struct EntityInputBuilder {
+    pub context: &'static BuilderContext,
+}
 
 impl EntityInputBuilder {
     /// used to get SeaORM entity insert input object name
-    pub fn insert_type_name<T>(context: &BuilderContext) -> String
+    pub fn insert_type_name<T>(&self) -> String
     where
         T: EntityTrait,
-        <T as EntityTrait>::Model: Sync,
     {
-        let object_name = EntityObjectBuilder::type_name::<T>(context);
-        format!("{}{}", object_name, context.entity_input.insert_suffix)
+        let entity_object_builder = EntityObjectBuilder {
+            context: self.context,
+        };
+        let object_name = entity_object_builder.type_name::<T>();
+        format!("{}{}", object_name, self.context.entity_input.insert_suffix)
     }
 
     /// used to get SeaORM entity update input object name
-    pub fn update_type_name<T>(context: &BuilderContext) -> String
+    pub fn update_type_name<T>(&self) -> String
     where
         T: EntityTrait,
-        <T as EntityTrait>::Model: Sync,
     {
-        let object_name = EntityObjectBuilder::type_name::<T>(context);
-        format!("{}{}", object_name, context.entity_input.update_suffix)
+        let entity_object_builder = EntityObjectBuilder {
+            context: self.context,
+        };
+        let object_name = entity_object_builder.type_name::<T>();
+        format!("{}{}", object_name, self.context.entity_input.update_suffix)
     }
 
     /// used to produce the SeaORM entity input object
-    fn input_object<T>(context: &BuilderContext, is_insert: bool) -> InputObject
+    fn input_object<T>(&self, is_insert: bool) -> InputObject
     where
         T: EntityTrait,
         <T as EntityTrait>::Model: Sync,
     {
         let name = if is_insert {
-            Self::insert_type_name::<T>(context)
+            self.insert_type_name::<T>()
         } else {
-            Self::update_type_name::<T>(context)
+            self.update_type_name::<T>()
+        };
+
+        let entity_object_builder = EntityObjectBuilder {
+            context: self.context,
+        };
+        let types_map_helper = TypesMapHelper {
+            context: self.context,
         };
 
         T::Column::iter().fold(InputObject::new(name), |object, column| {
-            let column_name = EntityObjectBuilder::column_name::<T>(context, &column);
+            let column_name = entity_object_builder.column_name::<T>(&column);
+            let entity_column_id = EntityColumnId::of::<T>(&column);
 
-            let full_name = format!(
-                "{}.{}",
-                EntityObjectBuilder::type_name::<T>(context),
-                column_name
-            );
+            let full_name = format!("{}.{}", entity_object_builder.type_name::<T>(), column_name);
 
             let skip = if is_insert {
-                context.entity_input.insert_skips.contains(&full_name)
+                self.context.entity_input.insert_skips.contains(&full_name)
             } else {
-                context.entity_input.update_skips.contains(&full_name)
+                self.context.entity_input.update_skips.contains(&full_name)
             };
 
             if skip {
@@ -85,25 +95,21 @@ impl EntityInputBuilder {
 
             let column_def = column.def();
 
+            if column_def.seaography().ignore {
+                return object;
+            }
+
             let auto_increment = match <T::PrimaryKey as PrimaryKeyToColumn>::from_column(column) {
                 Some(_) => T::PrimaryKey::auto_increment(),
                 None => false,
             };
             let has_default_expr = column_def.get_column_default().is_some();
-            let has_none_conversion = context
-                .types
-                .input_none_conversions
-                .contains_key(&full_name);
+            let is_insert_not_nullable =
+                is_insert && !(column_def.is_null() || auto_increment || has_default_expr);
 
-            let is_insert_not_nullable = is_insert
-                && !(column_def.is_null()
-                    || auto_increment
-                    || has_default_expr
-                    || has_none_conversion);
-
-            let graphql_type = match TypesMapHelper::get_column_input_type::<T>(
-                context,
+            let graphql_type = match types_map_helper.input_type_for_column::<T>(
                 &column,
+                &entity_column_id,
                 is_insert_not_nullable,
             ) {
                 Some(type_name) => type_name,
@@ -115,62 +121,49 @@ impl EntityInputBuilder {
     }
 
     /// used to produce the SeaORM entity insert input object
-    pub fn insert_input_object<T>(context: &BuilderContext) -> InputObject
+    pub fn insert_input_object<T>(&self) -> InputObject
     where
         T: EntityTrait,
         <T as EntityTrait>::Model: Sync,
     {
-        Self::input_object::<T>(context, true)
+        self.input_object::<T>(true)
     }
 
     /// used to produce the SeaORM entity update input object
-    pub fn update_input_object<T>(context: &BuilderContext) -> InputObject
+    pub fn update_input_object<T>(&self) -> InputObject
     where
         T: EntityTrait,
         <T as EntityTrait>::Model: Sync,
     {
-        Self::input_object::<T>(context, false)
+        self.input_object::<T>(false)
     }
 
     pub fn parse_object<T>(
-        context: &BuilderContext,
-        resolver_context: &ResolverContext<'_>,
+        &self,
         object: &ObjectAccessor,
     ) -> SeaResult<BTreeMap<String, sea_orm::Value>>
     where
         T: EntityTrait,
-        <T as EntityTrait>::Model: Sync,
     {
+        let entity_object_builder = EntityObjectBuilder {
+            context: self.context,
+        };
+        let types_map_helper = TypesMapHelper {
+            context: self.context,
+        };
+
         let mut map = BTreeMap::<String, sea_orm::Value>::new();
 
-        let entity_name = EntityObjectBuilder::type_name::<T>(context);
         for column in T::Column::iter() {
-            let column_name = EntityObjectBuilder::column_name::<T>(context, &column);
+            let column_name = entity_object_builder.column_name::<T>(&column);
 
             let value = match object.get(&column_name) {
                 Some(value) => value,
-                None => {
-                    if let Some(parser) = context
-                        .types
-                        .input_none_conversions
-                        .get(&format!("{entity_name}.{column_name}"))
-                    {
-                        let result = parser.as_ref()(resolver_context)?;
-                        if let Some(result) = result {
-                            map.insert(column_name, result);
-                        }
-                        continue;
-                    }
-                    continue;
-                }
+                None => continue,
             };
 
-            let result = TypesMapHelper::async_graphql_value_to_sea_orm_value::<T>(
-                context,
-                resolver_context,
-                &column,
-                &value,
-            )?;
+            let result =
+                types_map_helper.async_graphql_value_to_sea_orm_value::<T>(None, &column, &value)?;
 
             map.insert(column_name, result);
         }

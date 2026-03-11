@@ -1,7 +1,7 @@
 use async_graphql::dynamic::{InputObject, InputValue, TypeRef, ValueAccessor};
-use sea_orm::{EntityTrait, Iterable};
+use sea_orm::{ColumnTrait, EntityTrait, Iterable};
 
-use crate::{BuilderContext, EntityObjectBuilder};
+use crate::{pluralize_unique, BuilderContext, EntityObjectBuilder, SeaResult, SeaographyError};
 
 /// The configuration structure for OrderInputBuilder
 pub struct OrderInputConfig {
@@ -20,68 +20,83 @@ impl std::default::Default for OrderInputConfig {
 }
 
 /// This builder produces the OrderInput object of a SeaORM entity
-pub struct OrderInputBuilder {}
+pub struct OrderInputBuilder {
+    pub context: &'static BuilderContext,
+}
 
 impl OrderInputBuilder {
     /// used to get type name
-    pub fn type_name(context: &BuilderContext, object_name: &str) -> String {
-        context.order_input.type_name.as_ref()(object_name)
+    pub fn type_name(&self, object_name: &str) -> String {
+        let object_name = pluralize_unique(object_name, false);
+        self.context.order_input.type_name.as_ref()(&object_name)
     }
 
     /// used to get the OrderInput object of a SeaORM entity
-    pub fn to_object<T>(context: &BuilderContext) -> InputObject
+    pub fn to_object<T>(&self) -> InputObject
     where
         T: EntityTrait,
-        <T as EntityTrait>::Model: Sync,
     {
-        let object_name = EntityObjectBuilder::type_name::<T>(context);
-        let name = Self::type_name(context, &object_name);
+        let entity_object_builder = EntityObjectBuilder {
+            context: self.context,
+        };
+
+        let object_name = entity_object_builder.type_name::<T>();
+        let name = self.type_name(&object_name);
 
         T::Column::iter().fold(InputObject::new(name), |object, column| {
+            if column.def().seaography().ignore {
+                return object;
+            }
             object.field(InputValue::new(
-                EntityObjectBuilder::column_name::<T>(context, &column),
-                TypeRef::named(&context.order_by_enum.type_name),
+                entity_object_builder.column_name::<T>(&column),
+                TypeRef::named(&self.context.order_by_enum.type_name),
             ))
         })
     }
 
     pub fn parse_object<T>(
-        context: &BuilderContext,
+        &self,
         value: Option<ValueAccessor<'_>>,
-    ) -> Vec<(T::Column, sea_orm::sea_query::Order)>
+    ) -> SeaResult<Vec<(T::Column, sea_orm::sea_query::Order)>>
     where
         T: EntityTrait,
-        <T as EntityTrait>::Model: Sync,
     {
         match value {
             Some(value) => {
                 let mut data = Vec::new();
 
-                let order_by = value.object().unwrap();
+                let order_by = value.object()?;
+
+                let entity_object = EntityObjectBuilder {
+                    context: self.context,
+                };
 
                 for col in T::Column::iter() {
-                    let column_name = EntityObjectBuilder::column_name::<T>(context, &col);
+                    let column_name = entity_object.column_name::<T>(&col);
                     let order = order_by.get(&column_name);
 
                     if let Some(order) = order {
-                        let order = order.enum_name().unwrap();
+                        let order = order.enum_name()?;
 
-                        let asc_variant = &context.order_by_enum.asc_variant;
-                        let desc_variant = &context.order_by_enum.desc_variant;
+                        let asc_variant = &self.context.order_by_enum.asc_variant;
+                        let desc_variant = &self.context.order_by_enum.desc_variant;
 
                         if order.eq(asc_variant) {
                             data.push((col, sea_orm::Order::Asc));
                         } else if order.eq(desc_variant) {
                             data.push((col, sea_orm::Order::Desc));
                         } else {
-                            panic!("Cannot map enumeration")
+                            return Err(SeaographyError::TypeConversionError(
+                                "order_by".to_owned(),
+                                order.to_owned(),
+                            ));
                         }
                     }
                 }
 
-                data
+                Ok(data)
             }
-            None => Vec::new(),
+            None => Ok(Vec::new()),
         }
     }
 }

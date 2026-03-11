@@ -23,33 +23,35 @@ impl std::default::Default for OrderByEnumConfig {
 }
 
 /// The OrderByEnumeration is used for Entities Fields sorting
-pub struct OrderByEnumBuilder {}
+pub struct OrderByEnumBuilder {
+    pub context: &'static BuilderContext,
+}
 
 impl OrderByEnumBuilder {
-    pub fn type_name(context: &BuilderContext) -> String {
-        context.order_by_enum.type_name.clone()
+    pub fn type_name(&self) -> String {
+        self.context.order_by_enum.type_name.clone()
     }
 
-    pub fn asc_variant(context: &BuilderContext) -> String {
-        context.order_by_enum.asc_variant.clone()
+    pub fn asc_variant(&self) -> String {
+        self.context.order_by_enum.asc_variant.clone()
     }
 
-    pub fn desc_variant(context: &BuilderContext) -> String {
-        context.order_by_enum.desc_variant.clone()
+    pub fn desc_variant(&self) -> String {
+        self.context.order_by_enum.desc_variant.clone()
     }
 
-    pub fn is_asc(context: &BuilderContext, value: &str) -> bool {
-        context.order_by_enum.asc_variant.eq(value)
+    pub fn is_asc(&self, value: &str) -> bool {
+        self.context.order_by_enum.asc_variant.eq(value)
     }
 
-    pub fn is_desc(context: &BuilderContext, value: &str) -> bool {
-        context.order_by_enum.desc_variant.eq(value)
+    pub fn is_desc(&self, value: &str) -> bool {
+        self.context.order_by_enum.desc_variant.eq(value)
     }
 
     /// used to get the GraphQL enumeration config
-    pub fn enumeration(context: &BuilderContext) -> Enum {
-        Enum::new(&context.order_by_enum.type_name)
-            .item(EnumItem::new(&context.order_by_enum.asc_variant))
-            .item(EnumItem::new(&context.order_by_enum.desc_variant))
+    pub fn enumeration(&self) -> Enum {
+        Enum::new(self.type_name())
+            .item(EnumItem::new(self.asc_variant()))
+            .item(EnumItem::new(self.desc_variant()))
     }
 }

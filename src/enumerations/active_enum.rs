@@ -26,36 +26,38 @@ impl std::default::Default for ActiveEnumConfig {
 }
 
 /// This builder is used to convert a SeaORM enumeration to GraphQL
-pub struct ActiveEnumBuilder {}
+pub struct ActiveEnumBuilder {
+    pub context: &'static BuilderContext,
+}
 
 impl ActiveEnumBuilder {
     /// used to format SeaORM enumeration name to GraphQL enumeration name
-    pub fn type_name<A: ActiveEnum>(context: &BuilderContext) -> String {
+    pub fn type_name<A: ActiveEnum>(&self) -> String {
         let name = A::name().to_string();
-        context.active_enum.type_name.as_ref()(&name)
+        self.context.active_enum.type_name.as_ref()(&name)
     }
 
     /// used to format enumeration Iden name to GraphQL enumeration name
-    pub fn type_name_from_iden(context: &BuilderContext, name: &DynIden) -> String {
+    pub fn type_name_from_iden(&self, name: &DynIden) -> String {
         let name = name.to_string();
-        context.active_enum.type_name.as_ref()(&name)
+        self.context.active_enum.type_name.as_ref()(&name)
     }
 
     /// used to format SeaORM variant name to GraphQL variant name
-    pub fn variant_name(context: &BuilderContext, enum_name: &str, variant: &str) -> String {
-        context.active_enum.variant_name.as_ref()(enum_name, variant)
+    pub fn variant_name(&self, enum_name: &str, variant: &str) -> String {
+        self.context.active_enum.variant_name.as_ref()(enum_name, variant)
     }
 
     /// used to convert SeaORM enumeration to GraphQL enumeration
-    pub fn enumeration<A: ActiveEnum>(context: &BuilderContext) -> Enum {
-        let enum_name = Self::type_name::<A>(context);
+    pub fn enumeration<A: ActiveEnum>(&self) -> Enum {
+        let enum_name = self.type_name::<A>();
 
         A::values()
             .into_iter()
             .fold(Enum::new(&enum_name), |enumeration, variant| {
                 let variant: Value = variant.into();
                 let variant: String = variant.to_string();
-                enumeration.item(Self::variant_name(context, &enum_name, &variant))
+                enumeration.item(self.variant_name(&enum_name, &variant))
             })
     }
 }

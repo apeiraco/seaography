@@ -1,27 +1,12 @@
-use std::{future::Future, pin::Pin, sync::Arc};
-
-use async_graphql::dynamic::{
-    Field, FieldFuture, InputValue, ResolverContext, TypeRef, ValueAccessor,
-};
+use async_graphql::dynamic::{Field, FieldFuture, InputValue, TypeRef};
 use sea_orm::{
-    ActiveModelTrait, DatabaseConnection, EntityTrait, IntoActiveModel, QueryFilter,
-    TransactionTrait,
+    ActiveModelTrait, DatabaseConnection, DeleteResult, EntityTrait, IntoActiveModel, QueryFilter,
 };
 
 use crate::{
-    get_filter_conditions, BuilderContext, EntityObjectBuilder, EntityQueryFieldBuilder,
-    FilterInputBuilder, GuardAction,
+    get_filter_conditions, guard_error, BuilderContext, DatabaseContext, EntityObjectBuilder,
+    EntityQueryFieldBuilder, FilterInputBuilder, GuardAction, OperationType, UserContext,
 };
-
-pub type DeleteMutationFn = Arc<
-    dyn for<'a> Fn(
-            &'a ResolverContext<'a>,
-            Option<ValueAccessor<'a>>,
-        )
-            -> Pin<Box<dyn Future<Output = Result<u64, async_graphql::Error>> + Send + 'a>>
-        + Send
-        + Sync,
->;
 
 /// The configuration structure of EntityDeleteMutationBuilder
 pub struct EntityDeleteMutationConfig {
@@ -55,121 +40,77 @@ pub struct EntityDeleteMutationBuilder {
 
 impl EntityDeleteMutationBuilder {
     /// used to get mutation name for a SeaORM entity
-    pub fn type_name<T>(context: &BuilderContext) -> String
+    pub fn type_name<T>(&self) -> String
     where
         T: EntityTrait,
-        <T as EntityTrait>::Model: Sync,
     {
+        let entity_query_field_builder = EntityQueryFieldBuilder {
+            context: self.context,
+        };
         format!(
             "{}{}",
-            EntityQueryFieldBuilder::type_name::<T>(context),
-            context.entity_delete_mutation.mutation_suffix
+            entity_query_field_builder.type_name::<T>(),
+            self.context.entity_delete_mutation.mutation_suffix
         )
     }
 
-    pub fn to_field_with_mutation_fn<T>(&self, mutation_fn: DeleteMutationFn) -> Field
+    /// used to get the delete mutation field for a SeaORM entity
+    pub fn to_field<T, A>(&self) -> Field
     where
         T: EntityTrait,
-        <T as EntityTrait>::Model: Sync,
+        <T as EntityTrait>::Model: IntoActiveModel<A>,
+        A: ActiveModelTrait<Entity = T> + sea_orm::ActiveModelBehavior + Send,
     {
-        let context = self.context;
-        let object_name: String = EntityObjectBuilder::type_name::<T>(context);
+        let entity_filter_input_builder = FilterInputBuilder {
+            context: self.context,
+        };
+        let entity_object_builder = EntityObjectBuilder {
+            context: self.context,
+        };
+        let object_name: String = entity_object_builder.type_name::<T>();
+        let object_name_ = object_name.clone();
 
-        let guard = context.guards.entity_guards.get(&object_name);
+        let context = self.context;
+        let hooks = &self.context.hooks;
 
         Field::new(
-            Self::type_name::<T>(context),
+            self.type_name::<T>(),
             TypeRef::named_nn(TypeRef::INT),
-            move |resolve_context| {
-                let mutation_fn = mutation_fn.clone();
-
+            move |ctx| {
+                let object_name = object_name.clone();
                 FieldFuture::new(async move {
-                    let guard_flag = if let Some(guard) = guard {
-                        (*guard)(&resolve_context)
-                    } else {
-                        GuardAction::Allow
-                    };
-
-                    if let GuardAction::Block(reason) = guard_flag {
-                        return Err::<Option<_>, async_graphql::Error>(async_graphql::Error::new(
-                            reason.unwrap_or("Entity guard triggered.".into()),
-                        ));
+                    if let GuardAction::Block(reason) =
+                        hooks.entity_guard(&ctx, &object_name, OperationType::Delete)
+                    {
+                        return Err(guard_error(reason, "Entity guard triggered."));
                     }
 
-                    let filters = resolve_context
-                        .args
-                        .get(&context.entity_delete_mutation.filter_field);
+                    let db = &ctx
+                        .data::<DatabaseConnection>()?
+                        .restricted(ctx.data_opt::<UserContext>())?;
 
-                    let rows_affected: u64 = mutation_fn(&resolve_context, filters).await?;
+                    let filters = ctx.args.get(&context.entity_delete_mutation.filter_field);
+                    let filter_condition = get_filter_conditions::<T>(context, Some(&ctx), filters)?;
 
-                    Ok(Some(async_graphql::Value::from(rows_affected)))
+                    let mut stmt = T::delete_many();
+                    if let Some(filter) =
+                        hooks.entity_filter(&ctx, &object_name, OperationType::Delete)
+                    {
+                        stmt = stmt.filter(filter);
+                    }
+                    let res: DeleteResult = stmt.filter(filter_condition).exec(db).await?;
+
+                    hooks
+                        .entity_watch(&ctx, &object_name, OperationType::Delete)
+                        .await;
+
+                    Ok(Some(async_graphql::Value::from(res.rows_affected)))
                 })
             },
         )
         .argument(InputValue::new(
             &context.entity_delete_mutation.filter_field,
-            TypeRef::named(FilterInputBuilder::type_name(context, &object_name)),
+            TypeRef::named(entity_filter_input_builder.type_name(&object_name_)),
         ))
-    }
-
-    pub fn default_mutation_fn<T, A>(&self, active_model_hooks: bool) -> DeleteMutationFn
-    where
-        T: EntityTrait,
-        <T as EntityTrait>::Model: Sync,
-        <T as EntityTrait>::Model: IntoActiveModel<A>,
-        A: ActiveModelTrait<Entity = T> + sea_orm::ActiveModelBehavior + std::marker::Send,
-    {
-        let context = self.context;
-        Arc::new(move |resolve_context, filters| {
-            Box::pin(async move {
-                let db = resolve_context.data::<DatabaseConnection>()?;
-
-                let filters_condition =
-                    get_filter_conditions::<T>(resolve_context, context, filters);
-
-                if active_model_hooks {
-                    let transaction = db.begin().await?;
-
-                    let models: Vec<T::Model> = T::find()
-                        .filter(filters_condition.clone())
-                        .all(&transaction)
-                        .await?;
-
-                    let mut active_models: Vec<A> = vec![];
-                    for model in models {
-                        let active_model = model.into_active_model();
-                        active_models.push(active_model.before_delete(&transaction).await?);
-                    }
-
-                    let result = T::delete_many()
-                        .filter(filters_condition)
-                        .exec(&transaction)
-                        .await?;
-
-                    for active_model in active_models {
-                        active_model.after_delete(&transaction).await?;
-                    }
-
-                    transaction.commit().await?;
-
-                    Ok(result.rows_affected)
-                } else {
-                    let result = T::delete_many().filter(filters_condition).exec(db).await?;
-
-                    Ok(result.rows_affected)
-                }
-            })
-        })
-    }
-
-    /// used to get the delete mutation field for a SeaORM entity
-    pub fn to_field<T, A>(&self, active_model_hooks: bool) -> Field
-    where
-        T: EntityTrait,
-        <T as EntityTrait>::Model: Sync,
-        <T as EntityTrait>::Model: IntoActiveModel<A>,
-        A: ActiveModelTrait<Entity = T> + sea_orm::ActiveModelBehavior + std::marker::Send,
-    {
-        self.to_field_with_mutation_fn::<T>(self.default_mutation_fn::<T, A>(active_model_hooks))
     }
 }
