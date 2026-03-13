@@ -1,4 +1,8 @@
-use async_graphql::dynamic::{Field, FieldFuture, InputValue, TypeRef};
+use std::{future::Future, pin::Pin, sync::Arc};
+
+use async_graphql::dynamic::{
+    Field, FieldFuture, InputValue, ResolverContext, TypeRef, ValueAccessor,
+};
 use sea_orm::{
     ActiveModelTrait, DatabaseConnection, DeleteResult, EntityTrait, IntoActiveModel, QueryFilter,
 };
@@ -7,6 +11,16 @@ use crate::{
     get_filter_conditions, guard_error, BuilderContext, DatabaseContext, EntityObjectBuilder,
     EntityQueryFieldBuilder, FilterInputBuilder, GuardAction, OperationType, UserContext,
 };
+
+pub type DeleteMutationFn = Arc<
+    dyn for<'a> Fn(
+            &'a ResolverContext<'a>,
+            Option<ValueAccessor<'a>>,
+        )
+            -> Pin<Box<dyn Future<Output = Result<u64, async_graphql::Error>> + Send + 'a>>
+        + Send
+        + Sync,
+>;
 
 /// The configuration structure of EntityDeleteMutationBuilder
 pub struct EntityDeleteMutationConfig {
@@ -54,7 +68,7 @@ impl EntityDeleteMutationBuilder {
         )
     }
 
-    /// used to get the delete mutation field for a SeaORM entity
+    /// used to get the delete mutation field for a SeaORM entity using the hooks system
     pub fn to_field<T, A>(&self) -> Field
     where
         T: EntityTrait,
@@ -113,4 +127,53 @@ impl EntityDeleteMutationBuilder {
             TypeRef::named(entity_filter_input_builder.type_name(&object_name_)),
         ))
     }
+
+    /// Fork-compatible: delete mutation field with custom mutation function
+    pub fn to_field_with_mutation_fn<T>(&self, mutation_fn: DeleteMutationFn) -> Field
+    where
+        T: EntityTrait,
+        <T as EntityTrait>::Model: Sync,
+    {
+        let context = self.context;
+        let entity_object_builder = EntityObjectBuilder { context };
+        let entity_filter_input_builder = FilterInputBuilder { context };
+        let object_name: String = entity_object_builder.type_name::<T>();
+
+        let guard = context.guards.entity_guards.get(&object_name);
+
+        Field::new(
+            self.type_name::<T>(),
+            TypeRef::named_nn(TypeRef::INT),
+            move |resolve_context| {
+                let mutation_fn = mutation_fn.clone();
+
+                FieldFuture::new(async move {
+                    let guard_flag = if let Some(guard) = guard {
+                        (*guard)(&resolve_context)
+                    } else {
+                        GuardAction::Allow
+                    };
+
+                    if let GuardAction::Block(reason) = guard_flag {
+                        return Err::<Option<_>, async_graphql::Error>(
+                            guard_error(reason, "Entity guard triggered."),
+                        );
+                    }
+
+                    let filters = resolve_context
+                        .args
+                        .get(&context.entity_delete_mutation.filter_field);
+
+                    let rows_affected: u64 = mutation_fn(&resolve_context, filters).await?;
+
+                    Ok(Some(async_graphql::Value::from(rows_affected)))
+                })
+            },
+        )
+        .argument(InputValue::new(
+            &context.entity_delete_mutation.filter_field,
+            TypeRef::named(entity_filter_input_builder.type_name(&object_name)),
+        ))
+    }
 }
+

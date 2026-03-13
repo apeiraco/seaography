@@ -20,6 +20,10 @@ pub struct FilterTypesMapConfig {
     pub overwrites: BTreeMap<EntityColumnId, Option<FilterType>>,
     /// used to map entity_name.column_name to a custom condition function
     pub condition_functions: BTreeMap<EntityColumnId, FnFilterCondition>,
+    /// Fork-compatible: String-keyed overwrites (entity_name.column_name)
+    pub string_overwrites: BTreeMap<String, Option<FilterType>>,
+    /// Fork-compatible: String-keyed condition functions (entity_name.column_name)
+    pub string_condition_functions: BTreeMap<String, FnFilterCondition>,
 
     // basic filters
     pub string_filter_info: FilterInfo,
@@ -44,6 +48,8 @@ impl std::default::Default for FilterTypesMapConfig {
         Self {
             overwrites: BTreeMap::default(),
             condition_functions: BTreeMap::default(),
+            string_overwrites: BTreeMap::default(),
+            string_condition_functions: BTreeMap::default(),
             string_filter_info: FilterInfo {
                 type_name: "StringFilterInput".into(),
                 base_type: TypeRef::STRING.into(),
@@ -241,6 +247,12 @@ impl FilterTypesMapHelper {
         let entity_column_id = EntityColumnId::of::<T>(column);
 
         if let Some(ty) = self.context.filter_types.overwrites.get(&entity_column_id) {
+            return ty.clone();
+        }
+
+        // Fallback to string-keyed overwrites
+        let string_key = entity_column_id.to_string();
+        if let Some(ty) = self.context.filter_types.string_overwrites.get(&string_key) {
             return ty.clone();
         }
 
@@ -567,6 +579,7 @@ impl FilterTypesMapHelper {
                 FilterType::Custom(_) => {
                     let entity_column_id = EntityColumnId::of::<T>(column);
 
+                    // Check EntityColumnId-keyed condition_functions first
                     if let Some(filter_condition_fn) = self
                         .context
                         .filter_types
@@ -578,11 +591,26 @@ impl FilterTypesMapHelper {
                         } else {
                             return Ok(condition);
                         }
-                    } else {
-                        return Err(SeaographyError::CustomFilterError(
-                            entity_column_id.to_string(),
-                        ));
                     }
+
+                    // Fallback to string-keyed condition_functions
+                    let string_key = entity_column_id.to_string();
+                    if let Some(filter_condition_fn) = self
+                        .context
+                        .filter_types
+                        .string_condition_functions
+                        .get(&string_key)
+                    {
+                        if let Some(resolver_context) = resolver_context {
+                            return filter_condition_fn(resolver_context, condition, Some(filter));
+                        } else {
+                            return Ok(condition);
+                        }
+                    }
+
+                    return Err(SeaographyError::CustomFilterError(
+                        entity_column_id.to_string(),
+                    ));
                 }
                 FilterType::Array(Some(filter_type)) => match *filter_type {
                     FilterType::Text => &self.context.filter_types.string_array_filter_info,

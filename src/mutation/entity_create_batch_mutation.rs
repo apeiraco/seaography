@@ -1,4 +1,8 @@
-use async_graphql::dynamic::{Field, FieldFuture, FieldValue, InputValue, TypeRef};
+use std::{future::Future, pin::Pin, sync::Arc};
+
+use async_graphql::dynamic::{
+    Field, FieldFuture, FieldValue, InputValue, ObjectAccessor, ResolverContext, TypeRef,
+};
 use sea_orm::{
     ActiveModelTrait, DatabaseConnection, EntityTrait, IntoActiveModel, TransactionTrait,
 };
@@ -7,6 +11,16 @@ use crate::{
     guard_error, prepare_active_model, BuilderContext, DatabaseContext, EntityInputBuilder,
     EntityObjectBuilder, EntityQueryFieldBuilder, GuardAction, OperationType, UserContext,
 };
+
+pub type CreateBatchMutationFn<M> = Arc<
+    dyn for<'a> Fn(
+            &'a ResolverContext<'a>,
+            Vec<ObjectAccessor<'a>>,
+        ) -> Pin<
+            Box<dyn Future<Output = Result<Vec<M>, async_graphql::Error>> + Send + 'a>,
+        > + Send
+        + Sync,
+>;
 
 /// The configuration structure of EntityCreateBatchMutationBuilder
 pub struct EntityCreateBatchMutationConfig {
@@ -53,7 +67,7 @@ impl EntityCreateBatchMutationBuilder {
         )
     }
 
-    /// used to get the create mutation field for a SeaORM entity
+    /// used to get the create mutation field for a SeaORM entity using the hooks system
     pub fn to_field<T, A>(&self) -> Field
     where
         T: EntityTrait,
@@ -148,4 +162,84 @@ impl EntityCreateBatchMutationBuilder {
             TypeRef::named_nn_list_nn(entity_input_builder.insert_type_name::<T>()),
         ))
     }
+
+    /// Fork-compatible: create batch mutation field with custom mutation function
+    pub fn to_field_with_mutation_fn<T>(
+        &self,
+        mutation_fn: CreateBatchMutationFn<T::Model>,
+    ) -> Field
+    where
+        T: EntityTrait,
+        <T as EntityTrait>::Model: Sync,
+    {
+        let context = self.context;
+        let entity_object_builder = EntityObjectBuilder { context };
+        let entity_input_builder = EntityInputBuilder { context };
+        let object_name: String = entity_object_builder.type_name::<T>();
+
+        let guard = context.guards.entity_guards.get(&object_name);
+        let field_guards = &context.guards.field_guards;
+
+        Field::new(
+            self.type_name::<T>(),
+            TypeRef::named_nn_list_nn(entity_object_builder.basic_type_name::<T>()),
+            move |resolve_ctx| {
+                let mutation_fn = mutation_fn.clone();
+
+                FieldFuture::new(async move {
+                    let guard_flag = if let Some(guard) = guard {
+                        (*guard)(&resolve_ctx)
+                    } else {
+                        GuardAction::Allow
+                    };
+
+                    if let GuardAction::Block(reason) = guard_flag {
+                        return Err::<Option<_>, async_graphql::Error>(
+                            guard_error(reason, "Entity guard triggered."),
+                        );
+                    }
+
+                    let mut input_objects = vec![];
+                    let list = resolve_ctx
+                        .args
+                        .get(&context.entity_create_batch_mutation.data_field)
+                        .unwrap()
+                        .list()?;
+                    for input in list.iter() {
+                        let input_object = input.object()?;
+                        for (column, _) in input_object.iter() {
+                            let field_guard = field_guards.get(&format!(
+                                "{}.{}",
+                                EntityObjectBuilder { context }.type_name::<T>(),
+                                column
+                            ));
+                            let field_guard_flag = if let Some(field_guard) = field_guard {
+                                (*field_guard)(&resolve_ctx)
+                            } else {
+                                GuardAction::Allow
+                            };
+                            if let GuardAction::Block(reason) = field_guard_flag {
+                                return Err::<Option<_>, async_graphql::Error>(
+                                    guard_error(reason, "Field guard triggered."),
+                                );
+                            }
+                        }
+
+                        input_objects.push(input_object);
+                    }
+
+                    let results = mutation_fn(&resolve_ctx, input_objects).await?;
+
+                    Ok(Some(FieldValue::list(
+                        results.into_iter().map(FieldValue::owned_any),
+                    )))
+                })
+            },
+        )
+        .argument(InputValue::new(
+            &context.entity_create_batch_mutation.data_field,
+            TypeRef::named_nn_list_nn(entity_input_builder.insert_type_name::<T>()),
+        ))
+    }
 }
+

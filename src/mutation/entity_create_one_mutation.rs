@@ -1,4 +1,8 @@
-use async_graphql::dynamic::{Field, FieldFuture, FieldValue, InputValue, ObjectAccessor, TypeRef};
+use std::{future::Future, pin::Pin, sync::Arc};
+
+use async_graphql::dynamic::{
+    Field, FieldFuture, FieldValue, InputValue, ObjectAccessor, ResolverContext, TypeRef,
+};
 use sea_orm::{
     ActiveModelTrait, DatabaseConnection, EntityTrait, IntoActiveModel, Iterable,
     PrimaryKeyToColumn, PrimaryKeyTrait,
@@ -8,6 +12,16 @@ use crate::{
     guard_error, BuilderContext, DatabaseContext, EntityInputBuilder, EntityObjectBuilder,
     EntityQueryFieldBuilder, GuardAction, OperationType, UserContext,
 };
+
+pub type CreateOneMutationFn<M> = Arc<
+    dyn for<'a> Fn(
+            &'a ResolverContext<'a>,
+            ObjectAccessor<'a>,
+        )
+            -> Pin<Box<dyn Future<Output = Result<M, async_graphql::Error>> + Send + 'a>>
+        + Send
+        + Sync,
+>;
 
 /// The configuration structure of EntityCreateOneMutationBuilder
 pub struct EntityCreateOneMutationConfig {
@@ -54,7 +68,7 @@ impl EntityCreateOneMutationBuilder {
         )
     }
 
-    /// used to get the create mutation field for a SeaORM entity
+    /// used to get the create mutation field for a SeaORM entity using the hooks system
     pub fn to_field<T, A>(&self) -> Field
     where
         T: EntityTrait,
@@ -135,6 +149,76 @@ impl EntityCreateOneMutationBuilder {
             TypeRef::named_nn(entity_input_builder.insert_type_name::<T>()),
         ))
     }
+
+    /// Fork-compatible: create mutation field with custom mutation function
+    /// Uses BTreeMap-based guards from GuardsConfig
+    pub fn to_field_with_mutation_fn<T>(&self, mutation_fn: CreateOneMutationFn<T::Model>) -> Field
+    where
+        T: EntityTrait,
+        <T as EntityTrait>::Model: Sync,
+    {
+        let context = self.context;
+        let entity_object_builder = EntityObjectBuilder { context };
+        let entity_input_builder = EntityInputBuilder { context };
+        let object_name: String = entity_object_builder.type_name::<T>();
+
+        let guard = context.guards.entity_guards.get(&object_name);
+        let field_guards = &context.guards.field_guards;
+
+        Field::new(
+            self.type_name::<T>(),
+            TypeRef::named_nn(entity_object_builder.basic_type_name::<T>()),
+            move |resolver_context| {
+                let mutation_fn = mutation_fn.clone();
+
+                FieldFuture::new(async move {
+                    let guard_flag = if let Some(guard) = guard {
+                        (*guard)(&resolver_context)
+                    } else {
+                        GuardAction::Allow
+                    };
+
+                    if let GuardAction::Block(reason) = guard_flag {
+                        return Err::<Option<_>, async_graphql::Error>(
+                            guard_error(reason, "Entity guard triggered."),
+                        );
+                    }
+
+                    let value_accessor = resolver_context
+                        .args
+                        .get(&context.entity_create_one_mutation.data_field)
+                        .unwrap();
+                    let input_object = value_accessor.object()?;
+
+                    for (column, _) in input_object.iter() {
+                        let field_guard = field_guards.get(&format!(
+                            "{}.{}",
+                            EntityObjectBuilder { context }.type_name::<T>(),
+                            column
+                        ));
+                        let field_guard_flag = if let Some(field_guard) = field_guard {
+                            (*field_guard)(&resolver_context)
+                        } else {
+                            GuardAction::Allow
+                        };
+                        if let GuardAction::Block(reason) = field_guard_flag {
+                            return Err::<Option<_>, async_graphql::Error>(
+                                guard_error(reason, "Field guard triggered."),
+                            );
+                        }
+                    }
+
+                    let result = mutation_fn(&resolver_context, input_object).await?;
+
+                    Ok(Some(FieldValue::owned_any(result)))
+                })
+            },
+        )
+        .argument(InputValue::new(
+            &context.entity_create_one_mutation.data_field,
+            TypeRef::named_nn(entity_input_builder.insert_type_name::<T>()),
+        ))
+    }
 }
 
 pub fn prepare_active_model<T, A>(
@@ -172,3 +256,4 @@ where
 
     Ok(active_model)
 }
+

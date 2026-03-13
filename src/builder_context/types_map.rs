@@ -39,6 +39,8 @@ pub struct ColumnOptions {
 pub struct TypesMapConfig {
     // per-column options
     pub column_options: BTreeMap<EntityColumnId, ColumnOptions>,
+    /// Fork-compatible: String-keyed input none conversions (entity_name.column_name)
+    pub input_none_conversions: BTreeMap<String, FnInputTypeNoneConversion>,
     /// used to configure default time library
     pub time_library: TimeLibrary,
     /// used to configure default decimal library
@@ -53,6 +55,7 @@ impl std::default::Default for TypesMapConfig {
     fn default() -> Self {
         Self {
             column_options: BTreeMap::new(),
+            input_none_conversions: BTreeMap::new(),
 
             #[cfg(all(not(feature = "with-time"), not(feature = "with-chrono")))]
             time_library: TimeLibrary::String,

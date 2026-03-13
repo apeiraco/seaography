@@ -1,4 +1,9 @@
-use async_graphql::dynamic::{Field, FieldFuture, FieldValue, InputValue, TypeRef};
+use std::{future::Future, pin::Pin, sync::Arc};
+
+use async_graphql::dynamic::{
+    Field, FieldFuture, FieldValue, InputValue, ObjectAccessor, ResolverContext, TypeRef,
+    ValueAccessor,
+};
 use sea_orm::{
     ActiveModelTrait, ConnectionTrait, DatabaseConnection, EntityTrait, IntoActiveModel,
     QueryFilter, QueryTrait, TransactionTrait,
@@ -9,6 +14,17 @@ use crate::{
     EntityInputBuilder, EntityObjectBuilder, EntityQueryFieldBuilder, FilterInputBuilder,
     GuardAction, OperationType, UserContext,
 };
+
+pub type UpdateMutationFn<M> = Arc<
+    dyn for<'a> Fn(
+            &'a ResolverContext<'a>,
+            Option<ValueAccessor<'a>>,
+            ObjectAccessor<'a>,
+        ) -> Pin<
+            Box<dyn Future<Output = Result<Vec<M>, async_graphql::Error>> + Send + 'a>,
+        > + Send
+        + Sync,
+>;
 
 /// The configuration structure of EntityUpdateMutationBuilder
 pub struct EntityUpdateMutationConfig {
@@ -60,7 +76,7 @@ impl EntityUpdateMutationBuilder {
         )
     }
 
-    /// used to get the update mutation field for a SeaORM entity
+    /// used to get the update mutation field for a SeaORM entity using the hooks system
     pub fn to_field<T, A>(&self) -> Field
     where
         T: EntityTrait,
@@ -171,4 +187,83 @@ impl EntityUpdateMutationBuilder {
             TypeRef::named(entity_filter_input_builder.type_name(&object_name_)),
         ))
     }
+
+    /// Fork-compatible: update mutation field with custom mutation function
+    pub fn to_field_with_mutation_fn<T>(&self, mutation_fn: UpdateMutationFn<T::Model>) -> Field
+    where
+        T: EntityTrait,
+        <T as EntityTrait>::Model: Sync,
+    {
+        let context = self.context;
+        let entity_object_builder = EntityObjectBuilder { context };
+        let entity_input_builder = EntityInputBuilder { context };
+        let entity_filter_input_builder = FilterInputBuilder { context };
+        let object_name: String = entity_object_builder.type_name::<T>();
+
+        let guard = context.guards.entity_guards.get(&object_name);
+        let field_guards = &context.guards.field_guards;
+
+        Field::new(
+            self.type_name::<T>(),
+            TypeRef::named_nn_list_nn(entity_object_builder.basic_type_name::<T>()),
+            move |ctx| {
+                let mutation_fn = mutation_fn.clone();
+
+                FieldFuture::new(async move {
+                    let guard_flag = if let Some(guard) = guard {
+                        (*guard)(&ctx)
+                    } else {
+                        GuardAction::Allow
+                    };
+
+                    if let GuardAction::Block(reason) = guard_flag {
+                        return Err::<Option<_>, async_graphql::Error>(
+                            guard_error(reason, "Entity guard triggered."),
+                        );
+                    }
+
+                    let filters = ctx.args.get(&context.entity_update_mutation.filter_field);
+
+                    let value_accessor = ctx
+                        .args
+                        .get(&context.entity_update_mutation.data_field)
+                        .unwrap();
+                    let input_object = value_accessor.object()?;
+
+                    for (column, _) in input_object.iter() {
+                        let field_guard = field_guards.get(&format!(
+                            "{}.{}",
+                            EntityObjectBuilder { context }.type_name::<T>(),
+                            column
+                        ));
+                        let field_guard_flag = if let Some(field_guard) = field_guard {
+                            (*field_guard)(&ctx)
+                        } else {
+                            GuardAction::Allow
+                        };
+                        if let GuardAction::Block(reason) = field_guard_flag {
+                            return Err::<Option<_>, async_graphql::Error>(
+                                guard_error(reason, "Field guard triggered."),
+                            );
+                        }
+                    }
+
+                    let result = mutation_fn(&ctx, filters, input_object).await?;
+
+                    Ok(Some(FieldValue::list(
+                        result.into_iter().map(FieldValue::owned_any),
+                    )))
+                })
+            },
+        )
+        .argument(InputValue::new(
+            &context.entity_update_mutation.data_field,
+            TypeRef::named_nn(entity_input_builder.update_type_name::<T>()),
+        ))
+        .argument(InputValue::new(
+            &context.entity_update_mutation.filter_field,
+            TypeRef::named(entity_filter_input_builder.type_name(&object_name)),
+        ))
+    }
 }
+
