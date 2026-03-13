@@ -151,7 +151,14 @@ impl EntityObjectBuilder {
                     .types
                     .column_options
                     .get(&entity_column_id)
-                    .and_then(|options| options.output_conversion.as_ref());
+                    .and_then(|options| options.output_conversion.as_ref())
+                    .or_else(|| {
+                        // Fallback to string-keyed output_conversions
+                        self.context
+                            .types
+                            .output_conversions
+                            .get(&entity_column_id.to_string())
+                    });
 
                 let hooks = &self.context.hooks;
                 let context = self.context;

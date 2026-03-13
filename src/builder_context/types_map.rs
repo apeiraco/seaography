@@ -39,8 +39,16 @@ pub struct ColumnOptions {
 pub struct TypesMapConfig {
     // per-column options
     pub column_options: BTreeMap<EntityColumnId, ColumnOptions>,
+    /// Fork-compatible: String-keyed input conversions (entity_name.column_name)
+    pub input_conversions: BTreeMap<String, FnInputTypeConversion>,
     /// Fork-compatible: String-keyed input none conversions (entity_name.column_name)
     pub input_none_conversions: BTreeMap<String, FnInputTypeNoneConversion>,
+    /// Fork-compatible: String-keyed output conversions (entity_name.column_name)
+    pub output_conversions: BTreeMap<String, FnOutputTypeConversion>,
+    /// Fork-compatible: String-keyed input type overwrites (entity_name.column_name)
+    pub input_type_overwrites: BTreeMap<String, TypeRef>,
+    /// Fork-compatible: String-keyed output type overwrites (entity_name.column_name)
+    pub output_type_overwrites: BTreeMap<String, TypeRef>,
     /// used to configure default time library
     pub time_library: TimeLibrary,
     /// used to configure default decimal library
@@ -55,7 +63,11 @@ impl std::default::Default for TypesMapConfig {
     fn default() -> Self {
         Self {
             column_options: BTreeMap::new(),
+            input_conversions: BTreeMap::new(),
             input_none_conversions: BTreeMap::new(),
+            output_conversions: BTreeMap::new(),
+            input_type_overwrites: BTreeMap::new(),
+            output_type_overwrites: BTreeMap::new(),
 
             #[cfg(all(not(feature = "with-time"), not(feature = "with-chrono")))]
             time_library: TimeLibrary::String,
@@ -260,6 +272,14 @@ impl TypesMapHelper {
             }
         }
 
+        // Fallback to string-keyed input_conversions
+        let string_key = entity_column_id.to_string();
+        if let Some(parser) = self.context.types.input_conversions.get(&string_key) {
+            if let Some(resolver_context) = resolver_context {
+                return parser.as_ref()(resolver_context, value);
+            }
+        }
+
         converted_value_to_sea_orm_value(
             &self.get_column_type::<T>(column),
             value,
@@ -401,6 +421,13 @@ impl TypesMapHelper {
             .and_then(|options| options.input_type.as_ref())
         {
             Some(type_ref.clone())
+        } else if let Some(type_ref) = self
+            .context
+            .types
+            .input_type_overwrites
+            .get(&entity_column_id.to_string())
+        {
+            Some(type_ref.clone())
         } else {
             let column_def = column.def();
             let enum_type_name = column.enum_type_name();
@@ -428,6 +455,13 @@ impl TypesMapHelper {
             .column_options
             .get(entity_column_id)
             .and_then(|options| options.output_type.as_ref())
+        {
+            Some(type_ref.clone())
+        } else if let Some(type_ref) = self
+            .context
+            .types
+            .output_type_overwrites
+            .get(&entity_column_id.to_string())
         {
             Some(type_ref.clone())
         } else {
